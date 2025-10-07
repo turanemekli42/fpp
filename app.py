@@ -207,7 +207,8 @@ def render_debt_form(context):
     st.subheader(f"Borçları ve Giderleri Yönet ({context})")
     
     # Tüm olası değişkenleri form başında None veya 0 olarak başlatalım
-    kk_limit = 0.0
+    kk_limit = 0.0 # Kredi Kartı Limiti (add_debt'e bu isimle gidiyor)
+    kmh_limit = 0.0 # KMH Limiti (Bu değer sadece gösterim amaçlıdır, simülasyon mantığında kullanılmaz)
     harcama_kalemleri_isim = ""
     initial_faizli_tutar = 0.0
     debt_taksit = 0.0
@@ -280,6 +281,12 @@ def render_debt_form(context):
                 debt_kk_asgari_yuzdesi = st.number_input("KK Asgari Ödeme Yüzdesi (%)", value=st.session_state.tr_params['kk_asgari_odeme_yuzdesi_default'], step=1.0, min_value=0.0, key=f'kk_asgari_{context}') / 100.0
 
         elif debt_type == "Ek Hesap (KMH)":
+            # KMH seçildiğinde KK detaylarını sıfırla
+            kk_limit = 0.0
+            debt_kk_asgari_yuzdesi = 0.0 
+            debt_taksit = 0.0 # KK taksitlerini sıfırla
+            debt_kalan_ay = 0 # KK kalan ayı sıfırla
+
             with col_f2:
                 st.info("Ek Hesap (KMH) Detayları")
                 kmh_limit = st.number_input("Ek Hesap Limiti", min_value=1.0, value=50000.0, key=f'kmh_limit_{context}')
@@ -290,6 +297,11 @@ def render_debt_form(context):
                 debt_zorunlu_anapara_yuzdesi = st.number_input("Zorunlu Anapara Kapama Yüzdesi (%)", value=5.0, step=1.0, min_value=0.0, key=f'kmh_anapara_{context}') / 100.0
 
         elif debt_type == "Kredi (Sabit Taksit)":
+            # KK/KMH'ye ait gereksiz değişkenleri sıfırla
+            kk_limit = 0.0
+            debt_kk_asgari_yuzdesi = 0.0 
+            debt_zorunlu_anapara_yuzdesi = 0.0
+
             with col_f2:
                 st.info("Kredi Detayları")
                 initial_faizli_tutar = st.number_input("Kalan Anapara Tutarı", min_value=0.0, value=50000.0, key=f'initial_tutar_{context}')
@@ -301,14 +313,29 @@ def render_debt_form(context):
                 debt_faiz_aylik = st.number_input("Aylık Faiz Oranı (%)", value=4.5, step=0.05, min_value=0.0, key=f'debt_faiz_aylik_{context}') / 100.0
 
         elif debt_type == "Diğer Faizli Borç":
+            # KK/KMH'ye ait gereksiz değişkenleri sıfırla
+            kk_limit = 0.0
+            debt_kk_asgari_yuzdesi = 0.0 
+            debt_zorunlu_anapara_yuzdesi = 0.0
+
             with col_f2:
                 st.info("Borç Detayları")
                 initial_faizli_tutar = st.number_input("Kalan Anapara Tutarı", min_value=0.0, value=10000.0, key=f'initial_tutar_{context}')
+                debt_taksit = 0.0 # Sabit taksit yok
+                debt_kalan_ay = 99999 # Vadesiz
             with col_f3:
                 st.info("Faiz Bilgisi")
                 debt_faiz_aylik = st.number_input("Aylık Faiz Oranı (%)", value=5.0, step=0.05, min_value=0.0, key=f'debt_faiz_aylik_{context}') / 100.0
         
+        # --- SABİT GİDERLER ---
         elif debt_type == "Sabit Kira Gideri":
+            # Faizli borç değişkenlerini sıfırla
+            initial_faizli_tutar = 0.0
+            debt_faiz_aylik = 0.0
+            debt_kk_asgari_yuzdesi = 0.0 
+            debt_zorunlu_anapara_yuzdesi = 0.0
+            kk_limit = 0.0
+
             with col_f2:
                 st.info("Sabit Gider Detayları")
                 debt_taksit = st.number_input("Aylık Kira Tutarı", min_value=0.0, value=15000.0, key=f'sabit_gider_tutar_{context}')
@@ -318,6 +345,13 @@ def render_debt_form(context):
                  devam_etme_yuzdesi_input = 1.0
         
         elif debt_type == "Ev Kredisi Taksiti":
+            # Faizli borç değişkenlerini sıfırla
+            initial_faizli_tutar = 0.0
+            debt_faiz_aylik = 0.0
+            debt_kk_asgari_yuzdesi = 0.0 
+            debt_zorunlu_anapara_yuzdesi = 0.0
+            kk_limit = 0.0
+
             with col_f2:
                 st.info("Ev Kredisi Detayları")
                 debt_taksit = st.number_input("Aylık Taksit Tutarı", min_value=0.0, value=25000.0, key=f'sabit_gider_tutar_{context}')
@@ -325,7 +359,15 @@ def render_debt_form(context):
             with col_f3:
                 devam_etme_yuzdesi_input = st.number_input("Gider Bitince Devam Yüzdesi (%)", value=0.0, min_value=0.0, max_value=100.0, step=1.0, key=f'devam_yuzdesi_{context}', help="Kredi bittiğinde, bu paranın yüzde kaçı normal harcama olarak devam etsin?") / 100.0
         
+        # --- AYLIK HARCAMALAR ---
         elif debt_type == "Aylık Harcama Sepeti (Kütüphaneden)":
+            # Faizli borç değişkenlerini sıfırla
+            initial_faizli_tutar = 0.0
+            debt_faiz_aylik = 0.0
+            debt_kk_asgari_yuzdesi = 0.0 
+            debt_zorunlu_anapara_yuzdesi = 0.0
+            kk_limit = 0.0
+
             with col_f2:
                 st.info("Harcama Kalemlerini Seçin")
                 df_harcama = st.session_state.harcama_kalemleri_df
@@ -375,7 +417,7 @@ def render_debt_form(context):
 
 # --- Diğer Fonksiyonlar ---
 
-def display_and_manage_debts():
+def display_and_manage_debts(context_key): # Yeni parametre eklendi
     if st.session_state.borclar:
         st.subheader("📊 Mevcut Borçlar ve Giderler")
         
@@ -394,7 +436,7 @@ def display_and_manage_debts():
             display_df_filtered,
             column_config={"index": "Index No (Silmek için Seçin)"},
             hide_index=False,
-            key="current_debts_editor"
+            key=f"current_debts_editor_{context_key}" # Key güncellendi
         )
 
         st.info("Kaldırmak istediğiniz borçların solundaki **index numarasını** seçerek 'Sil' butonuna basın.")
@@ -402,10 +444,10 @@ def display_and_manage_debts():
         debt_indices_to_delete = st.multiselect(
             "Silinecek Borcun Index Numarası",
             options=display_df.index.tolist(),
-            key='debt_delete_select'
+            key=f'debt_delete_select_{context_key}' # KRİTİK DÜZELTME: Key'e bağlam (context) eklendi
         )
         
-        if st.button("Seçili Borç/Gideri Sil", type="secondary"):
+        if st.button(f"Seçili Borç/Gideri Sil {context_key}", type="secondary", key=f'delete_button_{context_key}'): # Silme butonu da çakışabilir, onu da güncelleyelim
             if not debt_indices_to_delete:
                 st.warning("Lütfen silmek istediğiniz borçların index numarasını seçin.")
                 return
@@ -420,7 +462,7 @@ def display_and_manage_debts():
     else:
         st.info("Henüz eklenmiş bir borç veya gider bulunmamaktadır.")
 
-def display_and_manage_incomes():
+def display_and_manage_incomes(context_key): # Yeni parametre eklendi
     if st.session_state.gelirler:
         st.subheader("💰 Mevcut Gelir Kaynakları")
         gelir_df = pd.DataFrame(st.session_state.gelirler)
@@ -428,7 +470,28 @@ def display_and_manage_incomes():
         gelir_df.columns = ["Gelir Adı", "Aylık Tutar", "Başlangıç Ayı", "Artış Yüzdesi", "Tek Seferlik Mi?"]
         gelir_df['Aylık Tutar'] = gelir_df['Aylık Tutar'].apply(format_tl)
         gelir_df['Artış Yüzdesi'] = (gelir_df['Artış Yüzdesi'] * 100).apply(lambda x: f"{x:.2f}%")
-        st.dataframe(gelir_df, hide_index=False)
+        st.dataframe(gelir_df, hide_index=False, key=f"current_incomes_editor_{context_key}") # Key güncellendi
+
+        st.info("Kaldırmak istediğiniz gelirlerin solundaki **index numarasını** seçerek 'Sil' butonuna basın.")
+        
+        income_indices_to_delete = st.multiselect(
+            "Silinecek Gelirin Index Numarası",
+            options=gelir_df.index.tolist(),
+            key=f'income_delete_select_{context_key}' # Key güncellendi
+        )
+        
+        if st.button(f"Seçili Geliri Sil {context_key}", type="secondary", key=f'delete_income_button_{context_key}'): # Silme butonu da güncellendi
+            if not income_indices_to_delete:
+                st.warning("Lütfen silmek istediğiniz gelirlerin index numarasını seçin.")
+                return
+            
+            st.session_state.gelirler = [
+                gelir for i, gelir in enumerate(st.session_state.gelirler)
+                if i not in income_indices_to_delete
+            ]
+            st.success(f"{len(income_indices_to_delete)} adet gelir listeden kaldırıldı.")
+            st.rerun()
+
     else:
         st.info("Henüz eklenmiş bir gelir kaynağı bulunmamaktadır.")
 
@@ -682,8 +745,8 @@ with tab_basic:
     render_debt_form("basic")
 
     st.markdown("---")
-    display_and_manage_incomes()
-    display_and_manage_debts()
+    display_and_manage_incomes("basic") # Context eklendi
+    display_and_manage_debts("basic")    # Context eklendi
     
     st.markdown("---")
     is_disabled_basic = not (bool(st.session_state.borclar) and bool(st.session_state.gelirler))
@@ -761,8 +824,8 @@ with tab_advanced:
         st.info("Manuel sıralama, sadece **'Borç Kapatma Yöntemi'** **Kullanıcı Tanımlı Sıra** olarak seçildiğinde geçerlidir.")
 
     st.markdown("---")
-    display_and_manage_incomes()
-    display_and_manage_debts()
+    display_and_manage_incomes("advanced") # Context eklendi
+    display_and_manage_debts("advanced")    # Context eklendi
     
     st.markdown("---")
     is_disabled_advanced = not (bool(st.session_state.borclar) and bool(st.session_state.gelirler))
