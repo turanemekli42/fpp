@@ -34,6 +34,7 @@ ONCELIK_STRATEJILERI = {
 def format_tl(tutar):
     if pd.isna(tutar) or tutar is None:
         return "0 TL"
+    # NumPy'den gelen float değerlerini integer'a çevirip formatlama
     return f"{int(tutar):,} TL"
 
 # --- 2. Kalıcılık Fonksiyonları ---
@@ -75,7 +76,6 @@ def load_data_from_upload(uploaded_file):
 
 # --- 2.1 Session State Başlatma ---
 
-# Session state'i varsayılanlarla başlat
 if 'borclar' not in st.session_state: st.session_state.borclar = []
 if 'gelirler' not in st.session_state: st.session_state.gelirler = []
 if 'harcama_kalemleri_df' not in st.session_state: st.session_state.harcama_kalemleri_df = pd.DataFrame({'Kalem Adı': ['Market', 'Ulaşım', 'Eğlence', 'Kişisel Bakım'], 'Aylık Bütçe (TL)': [15000, 3000, 2000, 1500]})
@@ -642,7 +642,11 @@ def run_alternative_scenario(borclar, gelirler, current_params, new_strategy_nam
         'oncelik_stratejisi': oncelik_stratejisi
     })
     
-    sonuc = simule_borc_planı(borclar, gelirler, {}, sim_params.get('total_birikim_hedefi', 0), sim_params.get('birikim_tipi_str', 'Aylık Sabit Tutar'), **sim_params)
+    # HATA GİDERME: total_birikim_hedefi ve birikim_tipi_str'yi sim_params'tan çekerek pasla
+    total_birikim_hedefi = sim_params.get('total_birikim_hedefi', 0.0)
+    birikim_tipi_str = sim_params.get('birikim_tipi_str', 'Aylık Sabit Tutar')
+    
+    sonuc = simule_borc_planı(borclar, gelirler, {}, total_birikim_hedefi, birikim_tipi_str, **sim_params)
     
     return {
         'isim': f"{new_strategy_name} ({new_agresiflik_name})",
@@ -656,10 +660,15 @@ def generate_report_and_recommendations(sonuc, current_params):
     # 1. Alternatif Senaryoların Çalıştırılması
     alternatifler = []
     
+    # Güvenli Strateji ve Agresiflik Adı Çekimi
     current_strat_list = [k for k, v in ONCELIK_STRATEJILERI.items() if v == current_params['oncelik_stratejisi']]
     current_strat = current_strat_list[0] if current_strat_list else "Kullanıcı Tanımlı Sıra"
     is_avalanche = current_strat.startswith("Borç Çığı")
     
+    current_agresiflik_val = current_params['agresiflik_carpan']
+    current_agresiflik_name_list = [k for k, v in STRATEJILER.items() if v == current_agresiflik_val]
+    current_agresiflik_name = current_agresiflik_name_list[0] if current_agresiflik_name_list else "Maksimum Çaba (Tüm Ek Ödeme)"
+
     # a) Öncelik Tersine Çevirme (Avalanche vs Snowball)
     if current_strat == "Kullanıcı Tanımlı Sıra":
         alt_strat_name = "Borç Çığı (Avalanche - Önce Faiz)" 
@@ -668,15 +677,12 @@ def generate_report_and_recommendations(sonuc, current_params):
     else:
         alt_strat_name = "Borç Çığı (Avalanche - Önce Faiz)"
         
-    current_agresiflik_name = [k for k, v in STRATEJILER.items() if v == current_params['agresiflik_carpan']][0]
-
     try:
         if current_strat != alt_strat_name: 
             alternatifler.append(run_alternative_scenario(st.session_state.borclar, st.session_state.gelirler, current_params, alt_strat_name, current_agresiflik_name))
     except: pass
         
     # b) Agresiflik Değiştirme (Maksimum Çaba vs. Temkinli/Aşırı Çaba)
-    current_agresiflik_val = current_params['agresiflik_carpan']
     alt_agresiflik_name = ""
     
     if current_agresiflik_val == STRATEJILER["Maksimum Çaba (Tüm Ek Ödeme)"]:
