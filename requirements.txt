@@ -5,3 +5,4 @@ python-dateutil
 fpdf2
 numpy
 matplotlib  # YENİ EKLENEN SATIR
+xlsxwriter 
