@@ -4,3 +4,4 @@ numpy
 
 python-dateutil
 Babel
+fpdf2
