@@ -515,3 +515,471 @@ def simule_borc_planı(borclar_initial, gelirler_initial, **sim_params):
     # ----------------------------------------------------
     while any(b['tutar'] > 1 for b in mevcut_borclar if b.get('min_kural') not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']) or ay_sayisi < 1:
         ay_sayisi += 1
+        ay_adi = f"Ay {ay_sayisi}"
+        
+        # 1. Gelir Hesaplama
+        toplam_gelir = 0.0
+        for gelir in mevcut_gelirler:
+            if ay_sayisi >= gelir['baslangic_ay']:
+                if gelir['tek_seferlik']:
+                    if ay_sayisi == gelir['baslangic_ay']:
+                        toplam_gelir += gelir['tutar']
+                else:
+                    artis_carpan = (1 + gelir['artis_yuzdesi']) ** ((ay_sayisi - gelir['baslangic_ay']) / 12)
+                    toplam_gelir += gelir['tutar'] * artis_carpan
+
+        # 2. Minimum Borç Ödemeleri ve Sabit Giderler
+        zorunlu_gider_toplam = birikime_ayrilan
+        min_borc_odeme_toplam = 0.0
+        
+        # Süresi dolan sabit giderleri ayıklama
+        aktif_borclar = []
+        for borc in mevcut_borclar:
+            if borc.get('kalan_ay', 999) > 0:
+                 aktif_borclar.append(borc)
+                 if borc['min_kural'] in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']:
+                     borc['kalan_ay'] -= 1
+
+        mevcut_borclar = aktif_borclar
+
+        for borc in mevcut_borclar:
+            if borc['tutar'] > 1 or borc['min_kural'] in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']:
+                
+                min_odeme = hesapla_min_odeme(borc, faiz_carpani)
+                
+                if borc['min_kural'] in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']:
+                    zorunlu_gider_toplam += borc.get('sabit_taksit', 0)
+                else:
+                    min_borc_odeme_toplam += min_odeme
+
+        # İlk ay için gelir ve gider toplamlarını kaydet
+        if ay_sayisi == 1:
+            ilk_ay_toplam_gelir = toplam_gelir
+            ilk_ay_toplam_gider = zorunlu_gider_toplam + min_borc_odeme_toplam
+
+
+        # 3. Ek Ödeme Gücü Hesaplama (ESKİSİ: Borç Saldırı Gücü)
+        kalan_nakit = toplam_gelir - zorunlu_gider_toplam - min_borc_odeme_toplam
+        saldırı_gucu = max(0, kalan_nakit * agresiflik_carpan)
+
+
+        # 4. Borçlara Ödeme Uygulama
+        
+        # a) Faiz ve Minimum Ödeme İşlemleri
+        for borc in mevcut_borclar:
+            is_faizli_borc = borc.get('min_kural') not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']
+
+            if borc['tutar'] > 0 and is_faizli_borc:
+                
+                # Akdi faiz veya gecikme faizi (Basitlik için burada gecikme faizi manuel eklenmedi)
+                etkilenen_faiz_orani = borc['faiz_aylik'] * faiz_carpani
+                eklenen_faiz = borc['tutar'] * etkilenen_faiz_orani
+                toplam_faiz_maliyeti += eklenen_faiz
+                
+                min_odeme = hesapla_min_odeme(borc, faiz_carpani)
+                
+                # Borca faiz eklenir, min ödeme düşülür
+                borc['tutar'] += eklenen_faiz
+                borc['tutar'] -= min_odeme
+                
+                # Kredi Taksit Sayısı Düşürme
+                if borc['min_kural'] == 'SABIT_TAKSIT_ANAPARA' and borc['kalan_ay'] > 0:
+                      borc['kalan_ay'] -= 1
+        
+        
+        # b) Ek Ödeme Gücünü Uygulama (Önceliğe Göre Sıralama)
+        saldırı_kalan = saldırı_gucu
+
+        # **MANUEL ÖNCELİK ENTEGRASYONU**
+        manuel_oncelik_kullan = (
+            sim_params['oncelik_stratejisi'] == 'Kullanici' and
+            st.session_state.get('manuel_oncelik_listesi')
+        )
+        
+        if manuel_oncelik_kullan:
+            manuel_oncelik_dict = st.session_state.manuel_oncelik_listesi
+            
+            for borc in mevcut_borclar:
+                if borc.get('min_kural') not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']:
+                    yeni_oncelik = manuel_oncelik_dict.get(borc['isim'])
+                    if yeni_oncelik is not None:
+                        borc['oncelik'] = yeni_oncelik
+
+            mevcut_borclar.sort(key=lambda x: x['oncelik'])
+            
+        else:
+            if sim_params['oncelik_stratejisi'] == 'Avalanche':
+                mevcut_borclar.sort(key=lambda x: (x.get('faiz_aylik', 0), x.get('tutar', 0)), reverse=True)
+            elif sim_params['oncelik_stratejisi'] == 'Snowball':
+                mevcut_borclar.sort(key=lambda x: x.get('tutar', float('inf')))
+            else:
+                mevcut_borclar.sort(key=lambda x: x.get('oncelik', float('inf')))
+
+
+        # Ek Ödemeyi Uygula
+        kapanan_borclar_listesi = []
+        for borc in mevcut_borclar:
+            is_ek_odemeye_acik = borc.get('min_kural') not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']
+            
+            if borc['tutar'] > 1 and saldırı_kalan > 0 and is_ek_odemeye_acik:
+                odecek_tutar = min(saldırı_kalan, borc['tutar'])
+                borc['tutar'] -= odecek_tutar
+                saldırı_kalan -= odecek_tutar
+                
+                if borc['tutar'] <= 1:
+                    kapanan_borclar_listesi.append(borc['isim'])
+                    borc['tutar'] = 0
+        
+        
+        # c) Kalan Ek Ödeme Gücünü Birikime Aktarma
+        mevcut_birikim += saldırı_kalan
+        
+        # Birikim Faizini Ekleme (Aylık bazda)
+        mevcut_birikim *= (1 + birikim_artis_aylik)
+
+
+        # 5. Sonuçları Kaydetme
+        aylik_sonuclar.append({
+            'Ay': ay_adi,
+            'Toplam Gelir': round(toplam_gelir),
+            'Toplam Zorunlu Giderler': round(zorunlu_gider_toplam),
+            'Min. Borç Ödemeleri': round(min_borc_odeme_toplam),
+            'Ek Ödeme Gücü': round(saldırı_gucu), # GÜNCELLEME
+            'Aylık Birikim Katkısı': round(birikime_ayrilan + saldırı_kalan),
+            'Kapanan Borçlar': ", ".join(kapanan_borclar_listesi) if kapanan_borclar_listesi else '-',
+            'Kalan Faizli Borç Toplamı': round(sum(b['tutar'] for b in mevcut_borclar if b.get('min_kural') not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER'])),
+            'Toplam Birikim': round(mevcut_birikim)
+        })
+
+        if ay_sayisi > 360:
+            st.warning("‼️ Simülasyon 30 yılı aştığı için durduruldu. Borçlar tamamen kapanmamış olabilir.")
+            break
+            
+    # HATA DÜZELTME 3: Borçlar hemen ilk ayda biterse veya hiç faizli borç yoksa, ay_sayisi'nı 0 yerine 1 döndür.
+    if ay_sayisi == 1 and not any(b['tutar'] > 1 for b in mevcut_borclar if b.get('min_kural') not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']):
+        return {
+            "df": pd.DataFrame(aylik_sonuclar),
+            "ay_sayisi": 1,
+            "toplam_faiz": round(toplam_faiz_maliyeti),
+            "toplam_birikim": round(mevcut_birikim),
+            "baslangic_faizli_borc": round(baslangic_faizli_borc),
+            "ilk_ay_gelir": ilk_ay_toplam_gelir,
+            "ilk_ay_gider": ilk_ay_toplam_gider,
+            "limit_asimi": False
+        }
+
+    return {
+        "df": pd.DataFrame(aylik_sonuclar),
+        "ay_sayisi": ay_sayisi,
+        "toplam_faiz": round(toplam_faiz_maliyeti),
+        "toplam_birikim": round(mevcut_birikim),
+        "baslangic_faizli_borc": round(baslangic_faizli_borc),
+        "ilk_ay_gelir": ilk_ay_toplam_gelir,
+        "ilk_ay_gider": ilk_ay_toplam_gider,
+        "limit_asimi": False
+    }
+
+
+# --- 7. Ana Uygulama Düzeni ---
+
+st.title("Borç Kapatma ve Finansal Planlama Simülasyonu")
+
+tab_basic, tab_advanced, tab_rules = st.tabs(["✨ Basit Planlama (Başlangıç)", "🚀 Gelişmiş Planlama", "⚙️ Yönetici Kuralları"])
+
+# --- TAB 2: Basit Planlama (Öne alındı ve açıklamalar eklendi) ---
+with tab_basic:
+    st.header("✨ Hızlı ve Varsayılan Planlama")
+    
+    st.markdown("---")
+    st.header("🚀 Programın Amacı: Borçlarınızı En Hızlı ve En Ucuz Yolla Kapatın")
+    
+    st.info("""
+        Bu simülasyon, borçlarınızı kapatma sürecini **stratejik ve sayısal** bir yaklaşımla planlar.
+        
+        Amacımız: **Mevcut gelir ve giderlerinizle borçlarınızı ne kadar sürede kapatabilir, bu süreçte ne kadar faiz öder ve ne kadar birikim yapabilirsiniz?** sorularına kesin cevaplar sunmaktır.
+        
+        Planlama başlarken: **1. Gelirleri, 2. Borç/Giderleri girin** ve ardından **3. Planınızı Oluşturun.**
+    """)
+    
+    with st.expander("📄 Detaylı Kullanım Kılavuzunu Gör"):
+        st.subheader("Adım 1: Gelir ve Borçları/Giderleri Tanımlama")
+        st.markdown("""
+        1. **Gelir Kaynağı:** Net aylık gelirinizi ve beklenen **Yıllık Artış Yüzdesini** (örn. %10) girin. Tek seferlik bonusları da eklemeyi unutmayın.
+        2. **Borçlar ve Giderler:** Tüm sabit giderlerinizi (Kira, Harcama Sepeti, KK Taksitleri) ve faizli borçlarınızı (KK Dönem Borcu, Kredi, KMH) ekleyin. Program, **BDDK yasal faiz ve taksit kısıtlarını** dikkate alır.
+        """)
+        
+        st.subheader("Adım 2: Stratejinizi Seçin (Varsayılanlar)**")
+        varsayilan_agresiflik_str = st.session_state.get('default_agressiflik', 'Maksimum Çaba (Tüm Ek Ödeme)')
+        varsayilan_oncelik_str = st.session_state.get('default_oncelik', 'Borç Çığı (Avalanche - Önce Faiz)')
+        st.markdown(f"""
+        * **Ek Ödeme Agresifliği:** Varsayılan olarak **{varsayilan_agresiflik_str}** kullanılır. (Kalan paranın tamamını borca yönlendirir.)
+        * **Borç Kapatma Yöntemi:** Varsayılan olarak **{varsayilan_oncelik_str}** kullanılır (En yüksek faize öncelik, en çok faiz tasarrufu).
+        """)
+        
+        st.subheader("Adım 3: Sonuçları Değerlendirme")
+        st.markdown("""
+        Simülasyon size **Borç Kapanma Süresini**, **Toplam Ödenen Faiz Maliyetini** ve **Kapanış Anındaki Toplam Birikim** miktarınızı net olarak gösterecektir.
+        
+        Daha detaylı senaryolar (Faiz Oranı Çarpanı, Manuel Sıra) için **'🚀 Gelişmiş Planlama'** sekmesini kullanın.
+        """)
+        
+        st.markdown("Kuralları, faiz oranlarını ve harcama bütçenizi değiştirmek için **'⚙️ Yönetici Kuralları'** sekmesini kullanın.")
+    
+    st.markdown("---")
+
+    varsayilan_agresiflik_str = st.session_state.get('default_agressiflik', 'Maksimum Çaba (Tüm Ek Ödeme)')
+    varsayilan_oncelik_str = st.session_state.get('default_oncelik', 'Borç Çığı (Avalanche - Önce Faiz)')
+    varsayilan_artis = st.session_state.get('default_aylik_artis', 3.5)
+    
+    col_st1, col_st2 = st.columns(2)
+    with col_st1:
+        BIRIKIM_TIPI_BASIC = st.radio("Birikim Hedefi Tipi", ["Aylık Sabit Tutar", "Borç Bitimine Kadar Toplam Tutar"], index=0, key='birikim_tipi_basic')
+        AYLIK_ZORUNLU_BIRIKIM_BASIC = st.number_input("Aylık Zorunlu Birikim Tutarı", value=5000, step=500, min_value=0, key='zorunlu_birikim_aylik_basic', disabled=BIRIKIM_TIPI_BASIC != "Aylık Sabit Tutar")
+        TOPLAM_BIRIKIM_HEDEFI_BASIC = st.number_input("Hedef Toplam Birikim Tutarı", value=50000, step=5000, min_value=0, key='zorunlu_birikim_toplam_basic', disabled=BIRIKIM_TIPI_BASIC != "Borç Bitimine Kadar Toplam Tutar")
+        BASLANGIC_BIRIKIM_BASIC = st.number_input("Mevcut Başlangıç Birikimi", value=0, step=1000, min_value=0, key='baslangic_birikim_basic')
+    with col_st2:
+        st.markdown(f"**Borç Kapatma Yöntemi:** **{varsayilan_oncelik_str}**")
+        st.markdown(f"**Ek Ödeme Agresifliği:** **{varsayilan_agresiflik_str}**")
+        st.markdown(f"**Birikim Değerlemesi:** TL Mevduat (Yıllık **%{varsayilan_artis}** Artış)")
+
+    st.markdown("---")
+    render_income_form("basic")
+    st.markdown("---")
+    render_debt_form("basic")
+
+    st.markdown("---")
+    display_and_manage_incomes()
+    display_and_manage_debts()
+    
+    st.markdown("---")
+    is_disabled_basic = not (bool(st.session_state.borclar) and bool(st.session_state.gelirler))
+    calculate_button_basic = st.button("BORÇ KAPATMA PLANINI OLUŞTUR", type="primary", disabled=is_disabled_basic, key="calc_basic")
+
+
+# --- TAB 1: Gelişmiş Planlama ---
+with tab_advanced:
+    st.header("🚀 Gelişmiş Planlama ve Senaryo Yönetimi")
+    st.info("Borç öncelikleri, faiz çarpanları ve birikim hedeflerini detaylıca yönetin.")
+    
+    col_st1, col_st2, col_st3 = st.columns(3)
+    with col_st1:
+        AGRESIFLIK_ADVANCED = st.selectbox("Ek Ödeme Agresifliği", options=list(STRATEJILER.keys()), index=2, key='agresiflik_adv')
+        ONCELIK_ADVANCED = st.selectbox("Borç Kapatma Yöntemi", options=list(ONCELIK_STRATEJILERI.keys()), index=0, key='oncelik_adv')
+    
+    with col_st2:
+        FAIZ_CARPANI_ADVANCED = st.slider("Faiz Oranı Çarpanı", min_value=0.5, max_value=2.0, value=1.0, step=0.1, key='faiz_carpan_adv')
+        with st.expander("❓ Faiz Çarpanı Ne İşe Yarar?"):
+            st.markdown("""
+                Bu çarpan, girdiğiniz tüm faiz oranlarını test amaçlı artırmanıza veya azaltmanıza olanak tanır.
+                
+                * **1.0'dan Büyük Değerler (Örn: 1.2x):** **Risk Analizi** - Faizler artarsa borç süreniz ve maliyetiniz ne olur?
+                * **1.0'dan Küçük Değerler (Örn: 0.8x):** **Fırsat Analizi** - Yapılandırma veya borç transferi ile faizi düşürmenin size ne kazandırdığını görün.
+            """)
+        AYLIK_ARTIS_ADVANCED = st.number_input("Birikim Yıllık Artış Yüzdesi (%)", value=3.5, min_value=0.0, step=0.1, key='aylik_artis_adv')
+        
+    with col_st3:
+        BIRIKIM_TIPI_ADVANCED = st.radio("Birikim Hedefi Tipi", ["Aylık Sabit Tutar", "Borç Bitimine Kadar Toplam Tutar"], index=0, key='birikim_tipi_adv')
+        AYLIK_ZORUNLU_BIRIKIM_ADVANCED = st.number_input("Aylık Zorunlu Birikim Tutarı", value=5000, step=500, min_value=0, key='zorunlu_birikim_aylik_adv', disabled=BIRIKIM_TIPI_ADVANCED != "Aylık Sabit Tutar")
+        TOPLAM_BIRIKIM_HEDEFI_ADVANCED = st.number_input("Hedef Toplam Birikim Tutarı", value=50000, step=5000, min_value=0, key='zorunlu_birikim_toplam_adv', disabled=BIRIKIM_TIPI_ADVANCED != "Borç Bitimine Kadar Toplam Tutar")
+        BASLANGIC_BIRIKIM_ADVANCED = st.number_input("Mevcut Başlangıç Birikimi", value=0, step=1000, min_value=0, key='baslangic_birikim_adv')
+
+
+    st.markdown("---")
+    render_income_form("advanced")
+    st.markdown("---")
+    render_debt_form("advanced")
+    
+    # Manuel Borç Sıralaması Editörü
+    st.markdown("---")
+    st.subheader("🛠️ Manuel Borç Kapatma Sırası (Gelişmiş)")
+    if ONCELIK_ADVANCED == "Kullanıcı Tanımlı Sıra":
+        if st.session_state.borclar:
+            odemeye_acik_borclar = [
+                b for b in st.session_state.borclar
+                if b.get('min_kural') not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']
+            ]
+            if odemeye_acik_borclar:
+                siralama_df = pd.DataFrame([
+                    {'isim': b['isim'], 'mevcut_oncelik': b['oncelik'] - 1000 if b['oncelik'] > 999 else b['oncelik'], 'yeni_oncelik': b['oncelik'] - 1000 if b['oncelik'] > 999 else b['oncelik']}
+                    for b in odemeye_acik_borclar
+                ])
+                siralama_df = siralama_df.sort_values(by='yeni_oncelik', ascending=True)
+
+                st.info("Borç önceliklerini manuel olarak ayarlamak için **'Yeni Öncelik'** sütunundaki numaraları değiştirin.")
+
+                edited_siralama_df = st.data_editor(
+                    siralama_df,
+                    column_config={
+                        "yeni_oncelik": st.column_config.NumberColumn("Yeni Öncelik", min_value=1, step=1),
+                        "isim": st.column_config.TextColumn("Borç Adı", disabled=True),
+                        "mevcut_oncelik": st.column_config.TextColumn("Mevcut Sıra", disabled=True)
+                    },
+                    hide_index=True,
+                    key='advanced_priority_editor'
+                )
+                st.session_state.manuel_oncelik_listesi = edited_siralama_df.set_index('isim')['yeni_oncelik'].apply(lambda x: x + 1000).to_dict()
+            else:
+                st.info("Ek ödemeye açık borç (KK, KMH, Kredi) bulunmamaktadır.")
+        else:
+            st.warning("Lütfen önce borç yükümlülüklerini ekleyin.")
+    else:
+        st.info("Manuel sıralama, sadece **'Borç Kapatma Yöntemi'** **Kullanıcı Tanımlı Sıra** olarak seçildiğinde geçerlidir.")
+
+    st.markdown("---")
+    display_and_manage_incomes()
+    display_and_manage_debts()
+    
+    st.markdown("---")
+    is_disabled_advanced = not (bool(st.session_state.borclar) and bool(st.session_state.gelirler))
+    calculate_button_advanced = st.button("GELİŞMİŞ PLAN OLUŞTUR", type="primary", disabled=is_disabled_advanced, key="calc_adv")
+
+
+# --- TAB 3: Yönetici Kuralları ---
+with tab_rules:
+    st.header("Simülasyon Kurallarını Yönet")
+    
+    st.subheader("Basit Planlama Varsayılanlarını Ayarla")
+    
+    col_r1, col_r2, col_r3 = st.columns(3)
+    
+    with col_r1:
+        DEFAULT_AGRESSIFLIK = st.selectbox(
+            "Varsayılan Ek Ödeme Agresifliği",
+            options=list(STRATEJILER.keys()),
+            index=2,
+            key='default_agressiflik'
+        )
+    
+    with col_r2:
+        DEFAULT_ONCELIK = st.selectbox(
+            "Varsayılan Borç Kapatma Yöntemi",
+            options=list(ONCELIK_STRATEJILERI.keys()),
+            index=0,
+            key='default_oncelik'
+        )
+        
+    with col_r3:
+        DEFAULT_ARTIS_YUZDESI = st.number_input(
+            "Varsayılan Birikim Yıllık Artışı (%)",
+            value=3.5, min_value=0.0, step=0.1,
+            key='default_aylik_artis'
+        )
+        
+    st.markdown("---")
+    st.subheader("🇹🇷 BDDK ve Yasal Limitler (Türkiye)")
+    st.warning("Bu değerler yasal zorunluluklardır ve simülasyonun gerçekçiliği için önemlidir. Gerekmedikçe değiştirmeyiniz.")
+    
+    col_l1, col_l2, col_l3 = st.columns(3)
+    
+    with col_l1:
+        st.session_state.tr_params['kk_taksit_max_ay'] = st.number_input(
+            "KK Mal/Hizmet Max Taksit Ayı",
+            min_value=1, value=st.session_state.tr_params['kk_taksit_max_ay'], step=1,
+            key='bddk_kk_taksit_max'
+        )
+        st.session_state.tr_params['kk_aylik_akdi_faiz'] = st.number_input(
+            "KK Aylık Akdi Faiz (%)",
+            min_value=0.0, value=st.session_state.tr_params['kk_aylik_akdi_faiz'], step=0.01,
+            key='bddk_kk_faiz'
+        )
+        
+    with col_l2:
+        st.session_state.tr_params['kk_asgari_odeme_yuzdesi_default'] = st.number_input(
+            "KK Asgari Ödeme Yüzdesi (%) (Örnek)",
+            min_value=0.0, max_value=100.0, value=st.session_state.tr_params['kk_asgari_odeme_yuzdesi_default'], step=1.0,
+            key='bddk_kk_asgari_yuzde'
+        )
+        st.session_state.tr_params['kk_aylik_gecikme_faiz'] = st.number_input(
+            "KK Aylık Gecikme Faiz (%)",
+            min_value=0.0, value=st.session_state.tr_params['kk_aylik_gecikme_faiz'], step=0.01,
+            key='bddk_kk_gecikme'
+        )
+        
+    with col_l3:
+        st.session_state.tr_params['kredi_taksit_max_ay'] = st.number_input(
+            "İhtiyaç Kredisi Max Taksit Ayı",
+            min_value=1, value=st.session_state.tr_params['kredi_taksit_max_ay'], step=1,
+            key='bddk_kredi_max'
+        )
+        st.session_state.tr_params['kmh_aylik_faiz'] = st.number_input(
+            "KMH/Kredi Piyasa Faizi (%) (Max)",
+            min_value=0.0, value=st.session_state.tr_params['kmh_aylik_faiz'], step=0.1,
+            key='bddk_kmh_faiz'
+        )
+        
+    st.markdown("---")
+    st.subheader("💳 Aylık Harcama Kalemleri Kütüphanesi")
+    
+    edited_df = st.data_editor(
+        st.session_state.harcama_kalemleri_df,
+        column_config={
+            "Kalem Adı": st.column_config.TextColumn("Kalem Adı", required=True),
+            "Aylık Bütçe (TL)": st.column_config.NumberColumn(
+                "Aylık Bütçe (TL)",
+                min_value=0,
+                step=100,
+                format="%.0f TL",
+            ),
+        },
+        num_rows="dynamic",
+        hide_index=True,
+        key='harcama_editor'
+    )
+    
+    st.session_state.harcama_kalemleri_df = edited_df
+
+    toplam_butce = st.session_state.harcama_kalemleri_df['Aylık Bütçe (TL)'].sum()
+    st.markdown(f"**Tanımlanan Toplam Aylık Bütçe:** **{int(toplam_butce):,} TL**")
+    st.markdown("---")
+    
+
+# --- 8. Hesaplama Tetikleyicileri ---
+
+if calculate_button_advanced or calculate_button_basic:
+    
+    if calculate_button_advanced:
+        context = "advanced"
+        sim_params = {
+            'agresiflik_carpan': STRATEJILER[AGRESIFLIK_ADVANCED],
+            'oncelik_stratejisi': ONCELIK_STRATEJILERI[ONCELIK_ADVANCED],
+            'faiz_carpani': FAIZ_CARPANI_ADVANCED,
+            'birikim_artis_aylik': AYLIK_ARTIS_ADVANCED,
+            'aylik_zorunlu_birikim': AYLIK_ZORUNLU_BIRIKIM_ADVANCED if BIRIKIM_TIPI_ADVANCED == "Aylık Sabit Tutar" else 0,
+            'baslangic_birikim': BASLANGIC_BIRIKIM_ADVANCED
+        }
+    else: # Basit Planlama
+        context = "basic"
+        varsayilan_agresiflik_str = st.session_state.get('default_agressiflik', 'Maksimum Çaba (Tüm Ek Ödeme)')
+        varsayilan_oncelik_str = st.session_state.get('default_oncelik', 'Borç Çığı (Avalanche - Önce Faiz)')
+        
+        sim_params = {
+            'agresiflik_carpan': STRATEJILER[varsayilan_agresiflik_str],
+            'oncelik_stratejisi': ONCELIK_STRATEJILERI[varsayilan_oncelik_str],
+            'faiz_carpani': 1.0,
+            'birikim_artis_aylik': st.session_state.get('default_aylik_artis', 3.5),
+            'aylik_zorunlu_birikim': AYLIK_ZORUNLU_BIRIKIM_BASIC if BIRIKIM_TIPI_BASIC == "Aylık Sabit Tutar" else 0,
+            'baslangic_birikim': BASLANGIC_BIRIKIM_BASIC
+        }
+
+    # Simülasyonu Çalıştır
+    sonuc = simule_borc_planı(st.session_state.borclar, st.session_state.gelirler, **sim_params)
+
+    if sonuc:
+        with st.container():
+            st.success("✅ Simülasyon başarıyla tamamlandı!")
+            
+            # Sonuç Özet Paneli
+            kapanma_suresi_yil = sonuc['ay_sayisi'] // 12
+            kapanma_suresi_ay = sonuc['ay_sayisi'] % 12
+            
+            st.header("📊 Finansal Hedef Özeti")
+            col_res1, col_res2, col_res3, col_res4 = st.columns(4)
+            
+            col_res1.metric("Borç Kapanma Süresi", f"{kapanma_suresi_yil} Yıl {kapanma_suresi_ay} Ay", "")
+            col_res2.metric("Toplam Borç Başlangıcı", format_tl(sonuc['baslangic_faizli_borc']), "")
+            col_res3.metric("Ödenen Toplam Faiz Maliyeti", format_tl(sonuc['toplam_faiz']), "")
+            col_res4.metric("Kapanış Anındaki Toplam Birikim", format_tl(sonuc['toplam_birikim']), "")
+            
+            st.markdown("---")
+            st.header("📈 Aylık Detaylı Simülasyon Sonuçları")
+            st.dataframe(sonuc['df'], hide_index=True)
