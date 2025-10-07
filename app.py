@@ -593,3 +593,4 @@ if calculate_button:
 
     else:
         st.warning("Lütfen simülasyonu başlatmak için en az bir gelir ve bir yükümlülük ekleyin.")
+
