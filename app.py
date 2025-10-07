@@ -34,7 +34,6 @@ ONCELIK_STRATEJILERI = {
 def format_tl(tutar):
     if pd.isna(tutar) or tutar is None:
         return "0 TL"
-    # NumPy'den gelen float değerlerini integer'a çevirip formatlama
     return f"{int(tutar):,} TL"
 
 # --- 2. Kalıcılık Fonksiyonları ---
@@ -197,7 +196,6 @@ def render_income_form(context):
         
         with col_i1:
             income_name = st.text_input("Gelir Kaynağı Adı", value="Maaş/Kira Geliri", key=f'inc_name_{context}')
-            # Veri Kontrolü: Tutar > 1.0 olmalı
             income_amount = st.number_input("Aylık Tutar", min_value=1.0, value=25000.0, key=f'inc_amount_{context}') 
             
         with col_i2:
@@ -478,11 +476,15 @@ def display_and_manage_incomes(context_key):
         st.info("Henüz eklenmiş bir gelir kaynağı bulunmamaktadır.")
 
 
-# --- 6. Borç Simülasyonu Fonksiyonu ---
-def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, total_birikim_hedefi, birikim_tipi_str, **sim_params):
+# --- 6. Borç Simülasyonu Fonksiyonu (İMZA DÜZELTİLDİ) ---
+def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **sim_params):
     
     if not borclar_initial or not gelirler_initial:
         return None
+
+    # Sim_params'tan zorunlu parametreleri çek
+    total_birikim_hedefi = sim_params.get('total_birikim_hedefi', 0.0)
+    birikim_tipi_str = sim_params.get('birikim_tipi_str', 'Aylık Sabit Tutar')
 
     mevcut_borclar = copy.deepcopy(borclar_initial)
     mevcut_gelirler = copy.deepcopy(gelirler_initial)
@@ -515,8 +517,8 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, tot
         borc_tamamlandi = not any(b['tutar'] > 1 for b in mevcut_borclar if b.get('min_kural') not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER'])
         
         # Birikim Hedefi Kontrolü
-        if sim_params.get('birikim_tipi_str') == "Borç Bitimine Kadar Toplam Tutar":
-            birikim_hedefi_tamamlandi = mevcut_birikim >= sim_params.get('total_birikim_hedefi', 0)
+        if birikim_tipi_str == "Borç Bitimine Kadar Toplam Tutar":
+            birikim_hedefi_tamamlandi = mevcut_birikim >= total_birikim_hedefi
         else:
             birikim_hedefi_tamamlandi = True
 
@@ -642,11 +644,12 @@ def run_alternative_scenario(borclar, gelirler, current_params, new_strategy_nam
         'oncelik_stratejisi': oncelik_stratejisi
     })
     
-    # HATA GİDERME: total_birikim_hedefi ve birikim_tipi_str'yi sim_params'tan çekerek pasla
+    # total_birikim_hedefi ve birikim_tipi_str sim_params içinden zaten geliyor
     total_birikim_hedefi = sim_params.get('total_birikim_hedefi', 0.0)
     birikim_tipi_str = sim_params.get('birikim_tipi_str', 'Aylık Sabit Tutar')
     
-    sonuc = simule_borc_planı(borclar, gelirler, {}, total_birikim_hedefi, birikim_tipi_str, **sim_params)
+    # DÜZELTME: simule_borc_planı'nın yeni imzasını kullan
+    sonuc = simule_borc_planı(borclar, gelirler, {}, **sim_params)
     
     return {
         'isim': f"{new_strategy_name} ({new_agresiflik_name})",
@@ -818,7 +821,7 @@ with tab_advanced:
             odemeye_acik_borclar = [b for b in st.session_state.borclar if b.get('min_kural') not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']]
             if odemeye_acik_borclar:
                 siralama_df = pd.DataFrame([{'isim': b['isim'], 'mevcut_oncelik': b['oncelik'] - 1000 if b['oncelik'] > 999 else b['oncelik'], 'yeni_oncelik': st.session_state.manuel_oncelik_listesi.get(b['isim'], b['oncelik']) - 1000 if st.session_state.manuel_oncelik_listesi.get(b['isim'], b['oncelik']) > 999 else st.session_state.manuel_oncelik_listesi.get(b['isim'], b['oncelik'])} for b in odemeye_acik_borclar])
-                siralama_df = siralama_df.sort_values(by='yeni_oncelik', ascending=True)
+                siralama_df = pd.DataFrame(siralama_df).sort_values(by='yeni_oncelik', ascending=True)
                 st.info("Borç önceliklerini manuel olarak ayarlamak için **'Yeni Öncelik'** sütunundaki numaraları değiştirin.")
                 edited_siralama_df = st.data_editor(siralama_df, column_config={"yeni_oncelik": st.column_config.NumberColumn("Yeni Öncelik", min_value=1, step=1), "isim": st.column_config.TextColumn("Borç Adı", disabled=True), "mevcut_oncelik": st.column_config.TextColumn("Mevcut Sıra", disabled=True)}, hide_index=True, key='advanced_priority_editor')
                 st.session_state.manuel_oncelik_listesi = edited_siralama_df.set_index('isim')['yeni_oncelik'].apply(lambda x: x + 1000).to_dict()
@@ -899,8 +902,8 @@ if calculate_button_advanced or calculate_button_basic:
     sim_params['birikim_tipi_str'] = birikim_tipi_str
 
 
-    # Ana Simülasyonu Çalıştır
-    sonuc = simule_borc_planı(st.session_state.borclar, st.session_state.gelirler, manuel_oncelikler, total_birikim_hedefi, birikim_tipi_str, **sim_params)
+    # Ana Simülasyonu Çalıştır (İMZA DÜZELTİLDİ)
+    sonuc = simule_borc_planı(st.session_state.borclar, st.session_state.gelirler, manuel_oncelikler, **sim_params)
 
     if sonuc:
         
