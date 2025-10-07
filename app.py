@@ -5,6 +5,11 @@ from dateutil.relativedelta import relativedelta
 import numpy as np
 import locale
 
+# PDF OLUŞTURMA İÇİN GEREKLİ KÜTÜPHANE
+from fpdf import FPDF 
+import base64
+import io
+
 # Türkçe yerel ayarlarını ayarla
 try:
     locale.setlocale(locale.LC_ALL, 'tr_TR.UTF-8')
@@ -19,9 +24,6 @@ except locale.Error:
 # 0. STREAMLIT AYARLARI VE OTURUM DURUMU
 # ======================================================================
 
-# Sayfa ayarı: Mobil cihazlarda sıkışmayı azaltmak için 'wide' yerine
-# varsayılan (center) veya 'wide' kullanıp sütunları daraltabiliriz.
-# Responsive davranması için 'wide' tutuyoruz ama sütunları 1-2'ye düşürüyoruz.
 st.set_page_config(layout="wide") 
 
 if 'borclar' not in st.session_state:
@@ -47,8 +49,6 @@ with tab2:
     st.subheader("Borç Kapatma Stratejisi Çarpanları (Agresiflik)")
     st.markdown("Borçlara Saldırı Gücü (Ek Ödeme) = Kalan Nakit * Çarpan")
     
-    # Mobil uyumluluk için 3 sütun yerine, gerekirse 2 sütuna düşürmeyi düşünebiliriz.
-    # Ancak çarpanlar kısa olduğundan 3 sütun bırakılabilir.
     COL_A, COL_B, COL_C = st.columns(3)
     with COL_A:
         CARPAN_YUMUSAK = st.number_input("Yumuşak Çarpanı (Konforlu)", value=0.2, min_value=0.0, max_value=1.0, step=0.05, key='carpan_konforlu')
@@ -76,7 +76,6 @@ with tab1:
 
     aylar_tr = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
     
-    # Mobil uyumluluk için 3 sütun yerine 2 sütun kullanıyoruz.
     col_h1, col_h2 = st.columns(2)
     with col_h1:
         SIM_BASLANGIC_AYI = st.selectbox("Simülasyon Başlangıç Ayı", options=[f"{a} {y}" for y in range(2025, 2027) for a in aylar_tr], index=9)
@@ -86,7 +85,6 @@ with tab1:
         hedef_yil = st.number_input("Hedef Borç Kapatma Yılı", min_value=sim_bas_yil, max_value=sim_bas_yil + 5, value=sim_bas_yil + 2, key='hedef_yil')
         HEDEF_BITIS_TARIHI = f"{hedef_ay_str} {hedef_yil}"
         
-        # Öncelik Seçimi
         ONCELIK = st.selectbox("Öncelikli Amaç", 
                                options=["Borç Kapatma Hızını Maksimize Et", "Birikim Hedefine Ulaşmayı Garanti Et"],
                                index=0,
@@ -110,7 +108,6 @@ with tab1:
                                                     value=50000, step=5000, min_value=0, key='zorunlu_birikim_toplam',
                                                     help="Borçlarınızın bittiği ay elinizde olmasını istediğiniz toplam birikim tutarı.")
         
-        # Önceliklere göre kısa bilgilendirme (col_h2'nin altına eklendi, col_h3 kaldırıldı)
         if ONCELIK == "Borç Kapatma Hızını Maksimize Et":
             st.success("Borç Kapatma öncelikli: Kalan nakit borca yönlendirilir.")
         else:
@@ -130,6 +127,7 @@ with tab1:
             artış_kuralı = "Yıllık Zam"
             artış_oranı = 1 + (zam_yuzdesi / 100.0)
         elif tip == "Yıllık İkramiye/Geri Ödeme":
+            # Tek seferlik gelir için ay ve yıl bilgisini de kullanacağız.
             periyot = "Tek Seferlik"
             artış_kuralı = "-"
             artış_oranı = 1.0
@@ -158,7 +156,7 @@ with tab1:
     with st.form("new_income_form", clear_on_submit=True):
         st.markdown("#### Yeni Gelir Ekle")
         
-        col_g1, col_g2 = st.columns(2) # 2 sütun mobil uyumluluk için idealdir
+        col_g1, col_g2 = st.columns(2) 
         with col_g1:
             income_name = st.text_input("Gelir Kaynağı Adı", value="Ana Maaş")
             income_type = st.selectbox("Gelir Tipi", 
@@ -170,13 +168,13 @@ with tab1:
             zam_yuzdesi = 0.0
             zam_ayi = ""
             
-            # Artış bilgileri alt alta (mobil uyum için)
             if income_type in ["Ana Maaş", "Sabit Kira Geliri", "Yan Gelir (Düzenli)"]:
                 zam_yuzdesi = st.number_input("Yıllık Artış Yüzdesi (Örn: 30)", value=30.0, min_value=0.0, key='income_zam_yuzdesi')
                 zam_ayi = st.selectbox("Yıllık Artış Ayı", options=["Ocak", "Temmuz", "Haziran"], index=0, key='income_zam_ayi')
             
             if income_type == "Yıllık İkramiye/Geri Ödeme":
-                 zam_ayi = st.selectbox("Gelirin Geldiği Ay", options=aylar_tr, index=9, key='income_tek_seferlik_ayi')
+                 zam_ayi = st.selectbox("Gelirin Geleceği Ay", options=aylar_tr, index=9, key='income_tek_seferlik_ayi')
+                 st.info("Bu gelir, sadece Simülasyonun başladığı yıl, seçtiğiniz ayda tek seferlik olarak hesaplanır.")
 
 
         submit_income_button = st.form_submit_button(label="Geliri Ekle")
@@ -184,16 +182,24 @@ with tab1:
             add_income(income_name, initial_tutar, income_type, zam_yuzdesi, zam_ayi)
 
 
-    # Eklenen Gelirleri Göster ve Silme Seçeneği Sun (Kısaltıldı)
+    # Eklenen Gelirleri Göster
     if st.session_state.gelirler:
         st.markdown("#### Eklenen Gelir Kaynaklarınız")
         income_data = []
         for i, income in enumerate(st.session_state.gelirler):
+            
+             if income['tip'] == "Yıllık İkramiye/Geri Ödeme":
+                 artış_kuralı_str = f"Tek Seferlik ({income['zam_ayi_gun']} ayında)"
+             elif income['tip'] in ["Ana Maaş", "Sabit Kira Geliri", "Yan Gelir (Düzenli)"]:
+                 artış_kuralı_str = f"Yıllık %{income['zam_yuzdesi']:.0f} (her {income['zam_ayi_gun']})"
+             else:
+                 artış_kuralı_str = "Sabit"
+                 
              income_data.append({
                  "Gelir Adı": income['isim'],
                  "Tip": income['tip'],
                  "Başlangıç Tutarı": f"₺{income['baslangic_tutar']:,.0f}",
-                 "Artış Kuralı": f"%{income['zam_yuzdesi']:.0f} her {income['zam_ayi_gun']}" if income['tip'] in ["Ana Maaş", "Sabit Kira Geliri", "Yan Gelir (Düzenli)"] else income['periyot'],
+                 "Artış Kuralı": artış_kuralı_str,
              })
         income_df = pd.DataFrame(income_data)
         st.dataframe(income_df, use_container_width=True, hide_index=True)
@@ -214,7 +220,6 @@ with tab1:
     st.markdown("---")
     st.subheader("Aylık Yükümlülükler ve Borçlar (Giderler)")
     
-    # Yardımcı Fonksiyon: Borç Ekle (Artık Sabit Giderleri de kapsıyor)
     def add_debt(isim, tutar, oncelik, borc_tipi, sabit_taksit, kalan_ay, faiz_aylik, kk_asgari_yuzdesi):
         
         if borc_tipi == "Kredi Kartı":
@@ -268,12 +273,9 @@ with tab1:
         st.session_state.borclar.append(new_debt)
         st.success(f"'{isim}' yükümlülüğü başarıyla eklendi.")
 
-    # Borç/Gider Ekleme Formu
     with st.form("new_debt_form", clear_on_submit=True):
         st.markdown("#### Yeni Yükümlülük/Borç Ekle")
         
-        # Mobil uyumluluk için 3 sütun yerine 2 sütuna düşürebiliriz, ancak borç verisi yoğun olduğu için 3 sütun bırakıp
-        # telefon ekranında alt alta geçmesini bekliyoruz (Streamlit'in varsayılan responsive davranışı).
         col_f1, col_f2, col_f3 = st.columns(3) 
         with col_f1:
             debt_name = st.text_input("Yükümlülük Adı", value="Yeni Yükümlülük")
@@ -319,7 +321,6 @@ with tab1:
         if submit_button:
             add_debt(debt_name, initial_tutar, debt_priority, debt_type, debt_taksit, debt_kalan_ay, debt_faiz_aylik, debt_kk_asgari_yuzdesi)
 
-    # Eklenen Borçları Göster ve Silme Seçeneği Sun (Kısaltıldı)
     if st.session_state.borclar:
         st.markdown("#### Eklenen Yükümlülükleriniz (Önceliğe Göre Sıralı)")
         
@@ -423,6 +424,10 @@ def simule_borc_planı(borclar_listesi, gelirler_listesi, agresiflik_carpani, he
     
     ilk_ay_toplam_gelir = 0
     mevcut_birikim = 0.0 
+    
+    # Tek seferlik gelir kontrolü için bu set session state'ten alınıyor.
+    if 'tek_seferlik_gelir_isaretleyicisi' not in st.session_state:
+        st.session_state.tek_seferlik_gelir_isaretleyicisi = set()
 
     while ay_sayisi < max_iterasyon:
         
@@ -430,13 +435,23 @@ def simule_borc_planı(borclar_listesi, gelirler_listesi, agresiflik_carpani, he
         
         # 3.1. Dinamik Gelir Hesaplama
         toplam_gelir = 0
+        
         for gelir in mevcut_gelirler:
             gelir_tutari = gelir['baslangic_tutar']
             
             if gelir['tip'] == "Yıllık İkramiye/Geri Ödeme":
                 zam_ay_no = aylar_map.get(gelir['zam_ayi_gun'])
-                if tarih.month == zam_ay_no and tarih.year == sim_baslangic_tarihi.year:
+                
+                gelir_id = (gelir['isim'], gelir['tip'])
+                
+                # Sadece simülasyon başlangıç yılı içinde ve yalnızca bir kez ekle
+                if (tarih.month == zam_ay_no and 
+                    tarih.year >= sim_baslangic_tarihi.year and 
+                    gelir_id not in st.session_state.tek_seferlik_gelir_isaretleyicisi):
+                    
                     toplam_gelir += gelir_tutari
+                    st.session_state.tek_seferlik_gelir_isaretleyicisi.add(gelir_id)
+                    
             elif gelir['artış_kuralı'] == "Yıllık Zam":
                 zam_ay_no = aylar_map.get(gelir['zam_ayi_gun'])
                 if tarih.month == zam_ay_no and tarih > sim_baslangic_tarihi:
@@ -472,7 +487,7 @@ def simule_borc_planı(borclar_listesi, gelirler_listesi, agresiflik_carpani, he
         kalan_nakit_brut = toplam_gelir - giderler_dahil_min_odeme
         kalan_nakit = max(0, kalan_nakit_brut) 
         
-        # 3.4. Birikim ve Saldırı Gücü Dağıtımı (Yeni Mantık)
+        # 3.4. Birikim ve Saldırı Gücü Dağıtımı
         
         yuksek_oncelikli_borclar_kaldi = any(b['tutar'] > 1 for b in mevcut_borclar if b['min_kural'] not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER', 'SABIT_TAKSIT_ANAPARA'])
         
@@ -481,17 +496,13 @@ def simule_borc_planı(borclar_listesi, gelirler_listesi, agresiflik_carpani, he
         
         if yuksek_oncelikli_borclar_kaldi:
             
-            # 1. HEDEF Birikim Miktarını Hesapla
             if hedef_tipi == "Aylık Sabit Tutar":
                 hedef_birikim_aylik = aylik_min_birikim
-            else: # Toplam Birikim Hedefi
+            else: 
                 kalan_ay_sayisi = max_iterasyon - ay_sayisi
                 kalan_birikim_hedefi = max(0, toplam_birikim_hedefi - mevcut_birikim)
                 
-                # Kalan aylara yayarak aylık hedefi bul
                 hedef_birikim_aylik = kalan_birikim_hedefi / kalan_ay_sayisi if kalan_ay_sayisi > 0 else kalan_birikim_hedefi
-            
-            # 2. Nakit Dağıtımı
             
             if oncelik == "Birikim Hedefine Ulaşmayı Garanti Et":
                 
@@ -500,7 +511,7 @@ def simule_borc_planı(borclar_listesi, gelirler_listesi, agresiflik_carpani, he
                 
                 saldırı_gucu = kalan_nakit * agresiflik_carpani
             
-            else: # Borç Kapatma Hızını Maksimize Et (Borç öncelikli)
+            else: 
                 
                 zorunlu_birikim_payi = min(kalan_nakit, hedef_birikim_aylik)
                 kalan_nakit -= zorunlu_birikim_payi
@@ -510,7 +521,6 @@ def simule_borc_planı(borclar_listesi, gelirler_listesi, agresiflik_carpani, he
                 birikime_ayrilan = zorunlu_birikim_payi + (kalan_nakit * (1 - agresiflik_carpani))
 
         else:
-            # Borçlar bittiyse tüm kalan nakit birikime gider
             birikime_ayrilan = kalan_nakit
             saldırı_gucu = 0
         
@@ -576,6 +586,9 @@ def simule_borc_planı(borclar_listesi, gelirler_listesi, agresiflik_carpani, he
         
     ilk_ay_toplam_gider = ilk_ay_zorunlu_gider + ilk_ay_min_borc_odeme
     
+    # Tek seferlik gelir işaretleyicisini resetle (Her bir strateji hesaplaması için sıfırlanmalı)
+    st.session_state.tek_seferlik_gelir_isaretleyicisi = set()
+
     return {
         "df": pd.DataFrame(aylik_sonuclar),
         "ay_sayisi": ay_sayisi,
@@ -592,30 +605,151 @@ def simule_borc_planı(borclar_listesi, gelirler_listesi, agresiflik_carpani, he
 
 def format_tl(value):
     """Değeri Türk Lirası formatına çevirir."""
+    # Try/except bloklarını kaldırdık, locale'in yukarıda ayarlandığını varsayıyoruz.
     return locale.currency(value, grouping=True, symbol="₺", international=False)
 
 def yap_finansal_yorum(oran, birikim_hedefi_str):
     """Gelir/Gider oranına göre dinamik yorum yapar."""
     
     if oran >= 1.05:
-        return ("🔴 **KRİTİK DURUM: Finansal Boğulma Riski!**", 
-                "Aylık zorunlu giderleriniz (min. borç ödemeleri dahil) gelirinizin **üzerindedir**. Bu durum acil nakit akışı sorununa yol açacaktır. **Gelirleri artırmak** veya zorunlu **yükümlülükleri acilen kısmak** zorundasınız. Bu senaryoda ek borç ödemesi ve birikim imkansızdır.")
+        return ("🔴 KRİTİK DURUM: Finansal Boğulma Riski!", 
+                "Aylık zorunlu giderleriniz (min. borç ödemeleri dahil) gelirinizin üzerindedir. Bu durum acil nakit akışı sorununa yol açacaktır. Gelirleri artırmak veya zorunlu yükümlülükleri acilen kısmak zorundasınız. Bu senaryoda ek borç ödemesi ve birikim imkansızdır.")
     
     elif oran >= 0.95:
-        return ("🟠 **YÜKSEK RİSK: Başabaş Noktası!**", 
-                f"Aylık gelirinizin %{oran*100:,.0f}'ü zorunlu yükümlülüklere gitmektedir. Çok dar bir marjınız var. En ufak bir ek harcama veya aksilik sizi **negatif nakit akışına** itebilir. **'{birikim_hedefi_str}'** gibi bir birikim hedefi çok zorlu olacaktır. Ek ödeme gücünüz çok düşüktür.")
+        return ("🟠 YÜKSEK RİSK: Başabaş Noktası!", 
+                f"Aylık gelirinizin %{oran*100:,.0f}'ü zorunlu yükümlülüklere gitmektedir. Çok dar bir marjınız var. En ufak bir ek harcama veya aksilik sizi negatif nakit akışına itebilir. '{birikim_hedefi_str}' gibi bir birikim hedefi çok zorlu olacaktır. Ek ödeme gücünüz çok düşüktür.")
                 
     elif oran >= 0.70:
-        return ("🟡 **ZORLU DENGE: Ağır Yükümlülükler!**", 
-                f"Gelirinizin %{oran*100:,.0f}'ü temel ve zorunlu ödemelere ayrılıyor. Borç kapatma süreci **uzun ve yorucu** olacaktır. Borç bitene kadar harcamalarınızı ciddi şekilde kontrol etmeli ve **Yıllık İkramiyeleri** tamamen borç kapatmaya yönlendirmelisiniz.")
+        return ("🟡 ZORLU DENGE: Ağır Yükümlülükler!", 
+                f"Gelirinizin %{oran*100:,.0f}'ü temel ve zorunlu ödemelere ayrılıyor. Borç kapatma süreci uzun ve yorucu olacaktır. Borç bitene kadar harcamalarınızı ciddi şekilde kontrol etmeli ve Yıllık İkramiyeleri tamamen borç kapatmaya yönlendirmelisiniz.")
         
     elif oran >= 0.50:
-        return ("🟢 **YÖNETİLEBİLİR YÜK: Dengeli Durum**", 
-                f"Gelirinizin %{oran*100:,.0f}'si zorunlu yükümlülüklere gidiyor. Borç yükünüz yönetilebilir seviyededir. **Dengeli** stratejiyi seçerek hem borçlarınızı hem de birikiminizi ilerletebilirsiniz.")
+        return ("🟢 YÖNETİLEBİLİR YÜK: Dengeli Durum", 
+                f"Gelirinizin %{oran*100:,.0f}'si zorunlu yükümlülüklere gidiyor. Borç yükünüz yönetilebilir seviyededir. Dengeli stratejiyi seçerek hem borçlarınızı hem de birikiminizi ilerletebilirsiniz.")
         
     else:
-        return ("🔵 **KONFORLU FİNANS: Güçlü Durum**", 
-                f"Gelirinizin sadece %{oran*100:,.0f}'i zorunlu ödemelere gidiyor. **Çok güçlü bir nakit akışınız** var. **Saldırgan** stratejiyi seçerek faiz maliyetinizi minimuma indirin veya Birikim Hedefini yükseltmeyi düşünebilirsiniz.")
+        return ("🔵 KONFORLU FİNANS: Güçlü Durum", 
+                f"Gelirinizin sadece %{oran*100:,.0f}'i zorunlu ödemelere gidiyor. Çok güçlü bir nakit akışınız var. Saldırgan stratejiyi seçerek faiz maliyetinizi minimuma indirin veya Birikim Hedefini yükseltmeyi düşünebilirsiniz.")
+
+# ----------------------------------------------------------------------
+# 5. PDF OLUŞTURMA FONKSİYONU
+# ----------------------------------------------------------------------
+
+class PDF(FPDF):
+    """Türkçe karakter destekli basit PDF sınıfı"""
+    def header(self):
+        self.set_font('Arial', 'B', 14)
+        self.cell(0, 10, 'Finansal Borç Yönetimi Simülasyon Raporu', 0, 1, 'C')
+        self.ln(5)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Arial', 'I', 8)
+        self.cell(0, 10, f'Sayfa {self.page_no()}', 0, 0, 'C')
+
+    def chapter_title(self, title):
+        self.set_font('Arial', 'B', 12)
+        self.cell(0, 8, title, 0, 1, 'L')
+        self.ln(2)
+
+    def chapter_body(self, body, is_code=False):
+        self.set_font('Arial', '', 10)
+        self.multi_cell(0, 5, body)
+        self.ln(5)
+        
+    def print_dataframe(self, df):
+        # Sütun isimlerini yazdır
+        self.set_font('Arial', 'B', 8)
+        col_widths = [20, 10, 20, 25, 25, 25, 20, 25] # Sabit genişlikler
+        col_headers = [
+            "Ay", "Süre", "Gelir", "Min. Ödeme", "Saldırı Gücü", 
+            "Birikim", "Kapanan Borç", "Kalan Borç"
+        ]
+
+        # Tekrar Türkçe uyumlu bir font denemesi yapalım (Arial'ın kendisi desteklemiyor)
+        # Ancak fpdf2'nin varsayılan fontları Türkçe karakterleri (ğ,ş,ç,ı,ö,ü) genelde desteklemez.
+        # Basitlik adına temel karakter setini koruyalım.
+
+        # Header
+        for header, width in zip(col_headers, col_widths):
+             self.cell(width, 7, header, 1, 0, 'C')
+        self.ln()
+
+        # Data
+        self.set_font('Arial', '', 7)
+        for index, row in df.iterrows():
+            if index % 40 == 0 and index != 0: # Sayfa sonu kontrolü
+                self.add_page()
+                self.set_font('Arial', 'B', 8)
+                for header, width in zip(col_headers, col_widths):
+                    self.cell(width, 7, header, 1, 0, 'C')
+                self.ln()
+                self.set_font('Arial', '', 7)
+
+            self.cell(col_widths[0], 6, row['Ay'], 1, 0, 'C')
+            self.cell(col_widths[1], 6, str(index + 1), 1, 0, 'C') # Ay Sayısı
+            self.cell(col_widths[2], 6, format_tl(row['Toplam Gelir']), 1, 0, 'R')
+            self.cell(col_widths[3], 6, format_tl(row['Min. Borç Ödemeleri']), 1, 0, 'R')
+            self.cell(col_widths[4], 6, format_tl(row['Borç Saldırı Gücü']), 1, 0, 'R')
+            self.cell(col_widths[5], 6, format_tl(row['Aylık Birikim Katkısı']), 1, 0, 'R')
+            self.cell(col_widths[6], 6, row['Kapanan Borç'] if row['Kapanan Borç'] != '-' else 'Yok', 1, 0, 'L')
+            self.cell(col_widths[7], 6, format_tl(row['Kalan Faizli Borç Toplamı']), 1, 0, 'R')
+            self.ln()
+        self.ln(5)
+
+def create_pdf(results, birikim_hedefi_str, yorum_baslik, yorum_detay, secili_strateji_adi, sim_baslangic_tarihi, hedef_bitis_tarihi, oncelik):
+    
+    pdf = PDF()
+    pdf.add_page()
+
+    # Genel Bilgiler
+    pdf.chapter_title("1. Genel Simülasyon Ayarları")
+    pdf.chapter_body(f"Başlangıç Tarihi: {sim_baslangic_tarihi.strftime('%B %Y')}\n"
+                     f"Hedef Kapatma Tarihi: {hedef_bitis_tarihi}\n"
+                     f"Birikim Hedefi: {birikim_hedefi_str}\n"
+                     f"Ana Öncelik: {oncelik}")
+
+    # Finansal Yorum
+    pdf.chapter_title("2. Finansal Durum Analizi")
+    pdf.chapter_body(f"Durum: {yorum_baslik}\n"
+                     f"Yorum: {yorum_detay}")
+    
+    # Karşılaştırma Tablosu
+    pdf.chapter_title("3. Strateji Karşılaştırması")
+    
+    df_karsilastirma = pd.DataFrame({
+        "Strateji": list(results.keys()),
+        "Süre (Ay)": [r["ay_sayisi"] for r in results.values()],
+        "Toplam Faiz": [format_tl(r["toplam_faiz"]) for r in results.values()],
+        "Toplam Birikim": [format_tl(r["toplam_birikim"]) for r in results.values()],
+    })
+    
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(40, 7, "Strateji", 1, 0, 'C')
+    pdf.cell(30, 7, "Süre (Ay)", 1, 0, 'C')
+    pdf.cell(50, 7, "Toplam Faiz Maliyeti", 1, 0, 'C')
+    pdf.cell(50, 7, "Toplam Birikim (Kapanış)", 1, 1, 'C')
+    
+    pdf.set_font('Arial', '', 10)
+    for index, row in df_karsilastirma.iterrows():
+        pdf.cell(40, 6, row['Strateji'], 1, 0, 'L')
+        pdf.cell(30, 6, str(row['Süre (Ay)']), 1, 0, 'C')
+        pdf.cell(50, 6, row['Toplam Faiz'], 1, 0, 'R')
+        pdf.cell(50, 6, row['Toplam Birikim'], 1, 1, 'R')
+
+    # Detaylı Tablo
+    pdf.chapter_title(f"4. Detaylı Aylık Plan ({secili_strateji_adi})")
+    df_detay = results[secili_strateji_adi]["df"].copy()
+    
+    # PDF tablosuna sığması için sütun isimlerini kısalt
+    df_detay.columns = ['Ay', 'Toplam Gelir', 'Toplam Zorunlu Giderler', 'Min. Borç Ödemeleri', 
+                        'Borç Saldırı Gücü', 'Aylık Birikim Katkısı', 'Kapanan Borçlar', 'Kalan Faizli Borç Toplamı']
+    
+    pdf.print_dataframe(df_detay)
+    
+    # PDF'i bellekte kaydet
+    pdf_output = pdf.output(dest='S').encode('latin-1')
+    return base64.b64encode(pdf_output).decode()
 
 
 if calculate_button:
@@ -628,9 +762,12 @@ if calculate_button:
         results = {}
         
         if BIRIKIM_TIPI == "Aylık Sabit Tutar":
-            birikim_hedefi_str = f"Aylık Min. Birikim: {format_tl(AYLIK_ZORUNLU_BIRIKIM)}"
+            birikim_hedesi_str = f"Aylık Min. Birikim: {format_tl(AYLIK_ZORUNLU_BIRIKIM)}"
         else:
             birikim_hedefi_str = f"Toplam Hedef Birikim: {format_tl(TOPLAM_BIRIKIM_HEDEFI)}"
+
+        # Tek seferlik gelir işaretleyicisini resetlemeden önce kopyasını al
+        session_state_copy = st.session_state.tek_seferlik_gelir_isaretleyicisi.copy()
 
         for name, carpan in STRATEJILER.items():
             results[name] = simule_borc_planı(
@@ -642,7 +779,8 @@ if calculate_button:
                 TOPLAM_BIRIKIM_HEDEFI,
                 ONCELIK
             )
-            
+            # Her simülasyon sonrası resetlendiği için, bir sonraki simülasyon için tekrar resetlemek gerekmez.
+
         # -------------------------------------------------------------
         # 4.1. FİNANSAL YORUM SİSTEMİ
         # -------------------------------------------------------------
@@ -657,7 +795,7 @@ if calculate_button:
         
         st.subheader("Finansal Durum Analizi (Gelir/Zorunlu Gider Oranına Göre)")
         
-        st.markdown(yorum_baslik)
+        st.markdown(f"**{yorum_baslik}**")
         st.info(f"Mevcut aylık Gelir (Başlangıç): **{format_tl(ilk_ay_gelir)}**\n\nMevcut aylık Zorunlu Yükümlülükler (Sabit Gider + Min. Borç Ödeme): **{format_tl(ilk_ay_gider)}**\n\n**Gelir/Zorunlu Gider Oranı**: **%{gelir_gider_oran*100:,.1f}**")
         st.write(yorum_detay)
         
@@ -676,55 +814,48 @@ if calculate_button:
         })
         
         st.subheader(f"Farklı Stratejilerin Finansal Etkileri ({birikim_hedefi_str})")
-        # DataFrame geniş olduğunda mobil cihazlarda sıkışabilir, use_container_width kullanıyoruz.
         st.dataframe(df_karsilastirma.set_index("Strateji"), use_container_width=True)
         
         # -------------------------------------------------------------
-        # 4.3. HEDEF KIYASLAMA VE ÖZET YORUM
-        # -------------------------------------------------------------
-        
-        en_hizli_sure = df_karsilastirma["Borç Kapatma Süresi (Ay)"].min()
-        en_hizli_strateji = df_karsilastirma.loc[df_karsilastirma["Borç Kapatma Süresi (Ay)"] == en_hizli_sure, "Strateji"].iloc[0]
-        
-        aylar_map = {"Ocak": 1, "Şubat": 2, "Mart": 3, "Nisan": 4, "Mayıs": 5, "Haziran": 6, "Temmuz": 7, "Ağustos": 8, "Eylül": 9, "Ekim": 10, "Kasım": 11, "Aralık": 12}
-        hedef_ay_no = aylar_map.get(HEDEF_BITIS_TARIHI.split()[0])
-        hedef_yil_no = int(HEDEF_BITIS_TARIHI.split()[1])
-        hedef_tarih = datetime(hedef_yil_no, hedef_ay_no, 1)
-        
-        kapanis_tarihi = sim_baslangic_tarihi + relativedelta(months=en_hizli_sure)
-        
-        st.markdown("\n**Özet Finansal Kapanış Yorumu**")
-        
-        if kapanis_tarihi <= hedef_tarih:
-            sure_farki = relativedelta(hedef_tarih, kapanis_tarihi)
-            fark_str = f"{sure_farki.years} yıl {sure_farki.months} ay" if sure_farki.years > 0 else f"{sure_farki.months} ay"
-            st.success(f"En hızlı strateji olan **{en_hizli_strateji}** ile borçlarınız hedeflenen **{HEDEF_BITIS_TARIHI}** tarihinden **{fark_str}** *daha erken* kapatılıyor.")
-        else:
-            sure_farki = relativedelta(kapanis_tarihi, hedef_tarih)
-            fark_str = f"{sure_farki.years} yıl {sure_farki.months} ay" if sure_farki.years > 0 else f"{sure_farki.months} ay"
-            st.warning(f"En hızlı strateji olan **{en_hizli_strateji}** ile bile borç kapatma tarihi **{kapanis_tarihi.strftime('%Y-%m')}**, hedeflenen **{HEDEF_BITIS_TARIH}** tarihinden **{fark_str}** *daha geç* gerçekleşiyor. **Finansal Durum Analizi** bölümündeki tavsiyeleri dikkate alınız.")
-        
-        if BIRIKIM_TIPI == "Borç Bitimine Kadar Toplam Tutar":
-             
-             en_iyi_birikim = df_karsilastirma["Toplam Birikim (Borçlar Kapanana Kadar)"].str.replace('₺', '').str.replace('.', '').str.replace(',', '').astype(float).max()
-
-             if en_iyi_birikim >= TOPLAM_BIRIKIM_HEDEFI:
-                 st.success(f"**Tebrikler!** Borçlar kapandığında en az **{format_tl(TOPLAM_BIRIKIM_HEDEFI)}** birikim hedefinize ulaşılıyor.")
-             else:
-                 st.error(f"**Dikkat:** Borçlar kapandığında en iyi stratejide bile **{format_tl(TOPLAM_BIRIKIM_HEDEFI)}** hedefinize **ulaşılamıyor** ({format_tl(en_iyi_birikim)}). Birikim önceliğini seçmeyi veya hedefinizi düşürmeyi düşünebilirsiniz.")
-
-
-        # -------------------------------------------------------------
-        # 4.4. DETAYLI TABLO SEÇİMİ
+        # 4.3. DETAYLI TABLO SEÇİMİ VE PDF İNDİRME
         # -------------------------------------------------------------
         
         st.markdown("---")
-        st.subheader("Aylık Detay Tablosu")
+        st.subheader("Aylık Detay Tablosu ve Rapor İndirme")
         secili_strateji = st.selectbox("Hangi Stratejinin Aylık Detaylarını Görmek İstersiniz?", options=list(results.keys()))
         
-        # Detay tabloları da mobil uyumluluk için genişliğe göre ayarlanır.
+        # Detay tabloları
         st.dataframe(results[secili_strateji]["df"], use_container_width=True)
+        
+        # PDF Oluşturma ve İndirme Butonu
+        aylar_map = {"Ocak": 1, "Şubat": 2, "Mart": 3, "Nisan": 4, "Mayıs": 5, "Haziran": 6, "Temmuz": 7, "Ağustos": 8, "Eylül": 9, "Ekim": 10, "Kasım": 11, "Aralık": 12}
+        sim_baslangic_ay_str = SIM_BASLANGIC_AYI.split()
+        sim_baslangic_tarihi_dt = datetime(int(sim_baslangic_ay_str[1]), aylar_map[sim_baslangic_ay_str[0]], 1)
 
+        pdf_b64 = create_pdf(
+            results=results, 
+            birikim_hedefi_str=birikim_hedefi_str, 
+            yorum_baslik=yorum_baslik, 
+            yorum_detay=yorum_detay,
+            secili_strateji_adi=secili_strateji,
+            sim_baslangic_tarihi=sim_baslangic_tarihi_dt,
+            hedef_bitis_tarihi=HEDEF_BITIS_TARIHI,
+            oncelik=ONCELIK
+        )
+        
+        # PDF indirme linki (Mobil cihazlar için de uyumludur)
+        pdf_filename = f"Finansal_Rapor_{secili_strateji.replace(' ', '_')}.pdf"
+        
+        st.markdown(
+            f"""
+            <a href="data:application/pdf;base64,{pdf_b64}" download="{pdf_filename}">
+                <button style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">
+                    📊 {secili_strateji} Stratejisini PDF Olarak İndir
+                </button>
+            </a>
+            """,
+            unsafe_allow_html=True
+        )
 
     else:
         st.warning("Lütfen simülasyonu başlatmak için en az bir gelir ve bir yükümlülük ekleyin.")
