@@ -1,4 +1,224 @@
-# YENİLENMİŞ DİNAMİK FONKSİYON
+import streamlit as st
+import pandas as pd
+import numpy as np # NameError'ı çözmek için tekrar eklendi
+import copy
+import json
+import io 
+import os
+
+# --- 0. Yapılandırma ---
+st.set_page_config(
+    page_title="Borç Yönetimi ve Finansal Planlama",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# --- 0.1 Kalıcılık Sabiti ---
+DATA_FILE = 'finans_data.json'
+
+# --- 1. Sabitler ve Kurallar ---
+
+STRATEJILER = {
+    "Minimum Çaba (Minimum Ek Ödeme)": 0.0,
+    "Temkinli (Yüzde 50)": 0.5,
+    "Maksimum Çaba (Tüm Ek Ödeme)": 1.0, 
+    "Aşırı Çaba (x1.5 Ek Ödeme)": 1.5,
+}
+
+ONCELIK_STRATEJILERI = {
+    "Borç Çığı (Avalanche - Önce Faiz)": "Avalanche",
+    "Borç Kartopu (Snowball - Önce Tutar)": "Snowball",
+    "Kullanıcı Tanımlı Sıra": "Kullanici"
+}
+
+# Para formatlama fonksiyonu
+def format_tl(tutar):
+    if pd.isna(tutar) or tutar is None:
+        return "0 TL"
+    return f"{int(tutar):,} TL"
+
+# --- 2. Kalıcılık Fonksiyonları ---
+
+def create_save_data():
+    """st.session_state'i JSON formatında hazırlar."""
+    
+    # KRİTİK DÜZELTME: DataFrame'i JSON uyumlu sözlüğe dönüştür
+    harcama_df_dict = st.session_state.harcama_kalemleri_df.to_dict() 
+    
+    data = {
+        'borclar': st.session_state.borclar,
+        'gelirler': st.session_state.gelirler,
+        'harcama_kalemleri_df': harcama_df_dict, # Artık sözlük formatında
+        'tr_params': st.session_state.tr_params,
+        'manuel_oncelik_listesi': st.session_state.manuel_oncelik_listesi
+    }
+    return json.dumps(data, ensure_ascii=False, indent=4).encode('utf-8')
+
+def load_data_from_upload(uploaded_file):
+    """Yüklenen dosyadan veriyi okur ve session state'e yükler."""
+    if uploaded_file is not None:
+        try:
+            json_bytes = uploaded_file.read()
+            data = json.loads(json_bytes.decode('utf-8'))
+            
+            st.session_state.borclar = data.get('borclar', [])
+            st.session_state.gelirler = data.get('gelirler', [])
+            
+            df_dict = data.get('harcama_kalemleri_df', None)
+            if df_dict:
+                 st.session_state.harcama_kalemleri_df = pd.DataFrame.from_dict(df_dict)
+            
+            if 'tr_params' in data:
+                st.session_state.tr_params.update(data['tr_params'])
+            st.session_state.manuel_oncelik_listesi = data.get('manuel_oncelik_listesi', {})
+            
+            st.success(f"Veriler başarıyla yüklendi: {uploaded_file.name}")
+            st.rerun()
+            
+        except Exception as e:
+            st.error(f"Dosya okuma veya veri formatı hatası. Lütfen geçerli bir yedekleme dosyası yüklediğinizden emin olun. Hata: {e}")
+
+# --- 2.1 Session State Başlatma ---
+
+if 'borclar' not in st.session_state: st.session_state.borclar = []
+if 'gelirler' not in st.session_state: st.session_state.gelirler = []
+if 'harcama_kalemleri_df' not in st.session_state: st.session_state.harcama_kalemleri_df = pd.DataFrame({'Kalem Adı': ['Market', 'Ulaşım', 'Eğlence', 'Kişisel Bakım'], 'Aylık Bütçe (TL)': [15000, 3000, 2000, 1500]})
+if 'tr_params' not in st.session_state: st.session_state.tr_params = {'kk_taksit_max_ay': 12, 'kk_asgari_odeme_yuzdesi_default': 20.0, 'kk_aylik_akdi_faiz': 3.66, 'kk_aylik_gecikme_faiz': 3.96, 'kmh_aylik_faiz': 5.0, 'kredi_taksit_max_ay': 36}
+if 'manuel_oncelik_listesi' not in st.session_state: st.session_state.manuel_oncelik_listesi = {}
+
+
+# --- 3. Yardımcı Fonksiyonlar ---
+
+def hesapla_min_odeme(borc, faiz_carpani=1.0):
+    kural = borc.get('min_kural')
+    tutar = borc.get('tutar', 0)
+    
+    if kural in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER', 'SABIT_TAKSIT_ANAPARA']:
+        return borc.get('sabit_taksit', 0)
+    
+    elif kural == 'ASGARI_FAIZ': 
+        asgari_anapara_yuzdesi = borc.get('kk_asgari_yuzdesi', 0)
+        return tutar * asgari_anapara_yuzdesi
+    
+    elif kural in ['FAIZ_ART_ANAPARA', 'FAIZ']: 
+        zorunlu_anapara_yuzdesi = borc.get('zorunlu_anapara_yuzdesi', 0)
+        return tutar * zorunlu_anapara_yuzdesi
+    
+    return 0
+
+
+def add_debt(isim, faizli_anapara, oncelik_str, borc_tipi, sabit_taksit, kalan_ay, faiz_aylik, kk_asgari_yuzdesi, zorunlu_anapara_yuzdesi, kk_limit=0.0, devam_etme_yuzdesi=0.0):
+    
+    borc_listesi = []
+    final_priority = 9999 
+
+    if oncelik_str:
+        try:
+            priority_val = int(oncelik_str.split('.')[0].split(' ')[-1])
+            final_priority = priority_val + 1000 
+        except:
+            if "1. En Yüksek Öncelik" in oncelik_str:
+                final_priority = 1001
+            else:
+                final_priority = 9999
+    
+    # Borç objesini oluştur
+    yeni_borc = {
+        "isim": isim,
+        "tutar": faizli_anapara,
+        "oncelik": final_priority,
+        "faiz_aylik": faiz_aylik,
+        "kalan_ay": kalan_ay if kalan_ay > 0 else 99999,
+        "sabit_taksit": sabit_taksit,
+        "kk_asgari_yuzdesi": kk_asgari_yuzdesi,
+        "zorunlu_anapara_yuzdesi": zorunlu_anapara_yuzdesi,
+        "limit": kk_limit,
+        "devam_etme_yuzdesi": devam_etme_yuzdesi
+    }
+
+    if borc_tipi == "Kredi Kartı Dönem Borcu (Faizli)":
+        if faizli_anapara > 0:
+            yeni_borc["isim"] = f"{isim} (Dönem Borcu)"
+            yeni_borc["min_kural"] = "ASGARI_FAIZ"
+            yeni_borc["faiz_aylik"] = st.session_state.tr_params['kk_aylik_akdi_faiz'] / 100.0
+            yeni_borc["kk_asgari_yuzdesi"] = st.session_state.tr_params['kk_asgari_odeme_yuzdesi_default'] / 100.0
+            borc_listesi.append(yeni_borc)
+
+    elif borc_tipi == "Ek Hesap (KMH)":
+        yeni_borc["min_kural"] = "FAIZ_ART_ANAPARA"
+        borc_listesi.append(yeni_borc)
+
+    elif borc_tipi == "Kredi (Sabit Taksit/Anapara)":
+        yeni_borc["min_kural"] = "SABIT_TAKSIT_ANAPARA"
+        borc_listesi.append(yeni_borc)
+
+    elif borc_tipi == "Diğer Faizli Borç":
+        yeni_borc["min_kural"] = "FAIZ"
+        borc_listesi.append(yeni_borc)
+        
+    elif borc_tipi in ["Zorunlu Sabit Gider (Kira, Aidat vb.)", "Ev Kredisi Taksiti", "Sabit Taksit Gideri (KK Taksiti, Aidat vb.)", "Aylık Harcama Sepeti (Kütüphaneden)"]:
+        yeni_borc["min_kural"] = "SABIT_GIDER"
+        yeni_borc["oncelik"] = 1
+        yeni_borc["tutar"] = 0 
+        yeni_borc["faiz_aylik"] = 0
+        
+        # Kalan ay ayarları
+        if borc_tipi == "Aylık Harcama Sepeti (Kütüphaneden)":
+            yeni_borc["kalan_ay"] = 99999
+        elif borc_tipi == "Ev Kredisi Taksiti" or borc_tipi == "Sabit Taksit Gideri (KK Taksiti, Aidat vb.)":
+             yeni_borc["kalan_ay"] = kalan_ay if kalan_ay > 0 else 99999
+        else: # Kira, Aidat vb.
+            yeni_borc["kalan_ay"] = kalan_ay if kalan_ay < 99999 and kalan_ay > 0 else 99999
+             
+        yeni_borc["sabit_taksit"] = sabit_taksit
+        borc_listesi.append(yeni_borc)
+
+    if borc_listesi:
+        st.session_state.borclar.extend(borc_listesi)
+        st.success(f"'{isim}' yükümlülüğü başarıyla eklendi.")
+    else:
+        st.warning(f"'{isim}' için eklenecek bir borç veya gider oluşturulamadı. (Tutar 0 olabilir)")
+
+
+def add_income(isim, tutar, baslangic_ay, artis_yuzdesi, tek_seferlik):
+    st.session_state.gelirler.append({
+        "isim": isim,
+        "tutar": tutar,
+        "baslangic_ay": baslangic_ay,
+        "artis_yuzdesi": artis_yuzdesi / 100.0,
+        "tek_seferlik": tek_seferlik
+    })
+    st.success(f"'{isim}' gelir kaynağı başarıyla eklendi.")
+
+
+# --- 4. Form Render Fonksiyonları ---
+
+def render_income_form(context):
+    st.subheader(f"Gelir Kaynağı Ekle ({context})")
+    
+    with st.form(f"new_income_form_{context}", clear_on_submit=True):
+        col_i1, col_i2, col_i3 = st.columns(3)
+        
+        with col_i1:
+            income_name = st.text_input("Gelir Kaynağı Adı", value="Maaş/Kira Geliri", key=f'inc_name_{context}')
+            income_amount = st.number_input("Aylık Tutar", min_value=1.0, value=25000.0, key=f'inc_amount_{context}') 
+            
+        with col_i2:
+            income_start_month = st.number_input("Başlangıç Ayı (1=Şimdi)", min_value=1, value=1, key=f'inc_start_month_{context}')
+            income_growth_perc = st.number_input("Yıllık Artış Yüzdesi (%)", min_value=0.0, value=10.0, step=0.5, key=f'inc_growth_perc_{context}')
+            
+        with col_i3:
+            income_is_one_time = st.checkbox("Tek Seferlik Gelir Mi? (Bonus, İkramiye vb.)", key=f'inc_one_time_{context}')
+            st.markdown(" ")
+            st.markdown(" ")
+            
+            submit_button = st.form_submit_button(label="Gelir Kaynağını Ekle")
+            
+        if submit_button:
+            add_income(income_name, income_amount, income_start_month, income_growth_perc, income_is_one_time)
+            st.rerun()
+
+
 def render_debt_form(context):
     st.subheader(f"Borçları ve Giderleri Yönet ({context})")
     
@@ -13,8 +233,8 @@ def render_debt_form(context):
     debt_zorunlu_anapara_yuzdesi = 0.0
     devam_etme_yuzdesi_input = 0.0
     debt_priority_str = ""
-    
-    # 1. Yükümlülük Adı ve Tipi, anında güncellenmesi için formun dışına alınmıştır.
+
+    # 1. Gider Adı ve Tipi (Anında güncelleme için formun dışında)
     col_type_1, col_type_2 = st.columns([1, 2])
     
     with col_type_1:
@@ -32,7 +252,6 @@ def render_debt_form(context):
     # Seçim grupları için ek alan açılmasını engelle
     if debt_type.startswith("---"):
          st.warning("Lütfen üstteki listeden faizli bir borç veya bir gider tipi seçin.")
-         # Bu noktada form oluşturulmaz, erken çıkış yapılır.
          return
          
     # 2. Ana Form Başlangıcı (Geri Kalan Alanlar)
@@ -189,28 +408,28 @@ def render_debt_form(context):
         submit_button = st.form_submit_button(label="Gider Kalemini Ekle")
         
         if submit_button:
-            # Sadece form gönderildiğinde burası çalışır
             if initial_faizli_tutar < 0 or debt_taksit < 0:
                 st.error("Borç/Taksit tutarı negatif olamaz.")
                 return
-            
+
             final_debt_name = f"{debt_name} ({harcama_kalemleri_isim})" if debt_type == "Aylık Harcama Sepeti (Kütüphaneden)" else debt_name
             
             add_debt(isim=final_debt_name, faizli_anapara=initial_faizli_tutar, oncelik_str=debt_priority_str, borc_tipi=debt_type, sabit_taksit=debt_taksit, kalan_ay=debt_kalan_ay, faiz_aylik=debt_faiz_aylik, kk_asgari_yuzdesi=debt_kk_asgari_yuzdesi, zorunlu_anapara_yuzdesi=debt_zorunlu_anapara_yuzdesi, kk_limit=kk_limit, devam_etme_yuzdesi=devam_etme_yuzdesi_input)
             st.rerun()
 
-# --- KODUN GERİ KALANI (DÜZELTİLMİŞ BAŞLIKLARLA) ---
+
+# --- 5. Görüntüleme ve Yönetim Fonksiyonları ---
 
 def display_and_manage_debts(context_key): 
     if st.session_state.borclar:
-        st.subheader("📊 Mevcut Finansal Yükümlülükler") # Başlık güncellendi
+        st.subheader("📊 Mevcut Finansal Yükümlülükler")
         
         display_df = pd.DataFrame(st.session_state.borclar)
         
         cols_to_show = ['isim', 'min_kural', 'tutar', 'sabit_taksit', 'faiz_aylik', 'oncelik', 'kalan_ay']
         display_df_filtered = display_df[[col for col in cols_to_show if col in display_df.columns]]
         
-        display_df_filtered.columns = ["Gider Kalemi Adı", "Kural", "Kalan Anapara", "Aylık Taksit/Gider", "Aylık Faiz (%)", "Öncelik", "Kalan Ay"] # Sütun başlıkları güncellendi
+        display_df_filtered.columns = ["Gider Kalemi Adı", "Kural", "Kalan Anapara", "Aylık Taksit/Gider", "Aylık Faiz (%)", "Öncelik", "Kalan Ay"]
         
         display_df_filtered['Kalan Anapara'] = display_df_filtered['Kalan Anapara'].apply(format_tl)
         display_df_filtered['Aylık Taksit/Gider'] = display_df_filtered['Aylık Taksit/Gider'].apply(format_tl)
@@ -220,9 +439,9 @@ def display_and_manage_debts(context_key):
 
         st.info("Kaldırmak istediğiniz gider kalemlerinin solundaki **index numarasını** seçerek 'Sil' butonuna basın.")
         
-        debt_indices_to_delete = st.multiselect("Silinecek Gider Kaleminin Index Numarası", options=display_df.index.tolist(), key=f'debt_delete_select_{context_key}') # Metin güncellendi
+        debt_indices_to_delete = st.multiselect("Silinecek Gider Kaleminin Index Numarası", options=display_df.index.tolist(), key=f'debt_delete_select_{context_key}')
         
-        if st.button(f"Seçili Gider Kalemini Sil {context_key}", type="secondary", key=f'delete_button_{context_key}'): # Metin güncellendi
+        if st.button(f"Seçili Gider Kalemini Sil {context_key}", type="secondary", key=f'delete_button_{context_key}'): 
             if not debt_indices_to_delete:
                 st.warning("Lütfen silmek istediğiniz gider kalemlerinin index numarasını seçin.")
                 return
@@ -234,8 +453,31 @@ def display_and_manage_debts(context_key):
     else:
         st.info("Henüz eklenmiş bir borç veya gider kalemi bulunmamaktadır.")
 
-# Diğer tüm fonksiyonlar (simule_borc_planı, generate_report_and_recommendations vb.) ve Streamlit yapısı önceki cevaptaki son haliyle kalmıştır.
-# Sadece aşağıda Ana Düzen ve Dipnot eklenmiştir.
+def display_and_manage_incomes(context_key): 
+    if st.session_state.gelirler:
+        st.subheader("💰 Mevcut Gelir Kaynakları")
+        gelir_df = pd.DataFrame(st.session_state.gelirler)
+        gelir_df = gelir_df[['isim', 'tutar', 'baslangic_ay', 'artis_yuzdesi', 'tek_seferlik']]
+        gelir_df.columns = ["Gelir Adı", "Aylık Tutar", "Başlangıç Ayı", "Artış Yüzdesi", "Tek Seferlik Mi?"]
+        gelir_df['Aylık Tutar'] = gelir_df['Aylık Tutar'].apply(format_tl)
+        gelir_df['Artış Yüzdesi'] = (gelir_df['Artış Yüzdesi'] * 100).apply(lambda x: f"{x:.2f}%")
+        st.dataframe(gelir_df, hide_index=False, key=f"current_incomes_editor_{context_key}") 
+
+        st.info("Kaldırmak istediğiniz gelirlerin solundaki **index numarasını** seçerek 'Sil' butonuna basın.")
+        
+        income_indices_to_delete = st.multiselect("Silinecek Gelirin Index Numarası", options=gelir_df.index.tolist(), key=f'income_delete_select_{context_key}')
+        
+        if st.button(f"Seçili Geliri Sil {context_key}", type="secondary", key=f'delete_income_button_{context_key}'):
+            if not income_indices_to_delete:
+                st.warning("Lütfen silmek istediğiniz gelirlerin index numarasını seçin.")
+                return
+            
+            st.session_state.gelirler = [gelir for i, gelir in enumerate(st.session_state.gelirler) if i not in income_indices_to_delete]
+            st.success(f"{len(income_indices_to_delete)} adet gelir listeden kaldırıldı.")
+            st.rerun()
+    else:
+        st.info("Henüz eklenmiş bir gelir kaynağı bulunmamaktadır.")
+
 
 # --- 6. Borç Ödeme Planı Hesaplama Fonksiyonu ---
 def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **sim_params):
@@ -243,14 +485,12 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **s
     if not borclar_initial or not gelirler_initial:
         return None
 
-    # Sim_params'tan zorunlu parametreleri çek
     total_birikim_hedefi = sim_params.get('total_birikim_hedefi', 0.0)
     birikim_tipi_str = sim_params.get('birikim_tipi_str', 'Aylık Sabit Tutar')
 
     mevcut_borclar = copy.deepcopy(borclar_initial)
     mevcut_gelirler = copy.deepcopy(gelirler_initial)
     
-    # Manuel Öncelikleri Uygula
     if sim_params.get('oncelik_stratejisi') == 'Kullanici':
         for borc in mevcut_borclar:
             if borc.get('min_kural') not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER'] and borc['isim'] in manuel_oncelikler:
@@ -409,28 +649,36 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **s
         }
 
         # Detaylı Borç/Gider Kalemlerini Ekle
-        for b in mevcut_borclar:
+        for b in borclar_initial: # Başlangıç listesini kullan ki, kapanan borçların sütun başlığı da olsun
             isim = b['isim']
-            kalan_tutar = round(b['tutar'])
+            
+            # Güncel kalan tutarı bul (mevcut_borclar listesinde aynı isimli nesneyi arayarak)
+            guncel_borc = next((item for item in mevcut_borclar if item['isim'] == isim), None)
+            
+            if guncel_borc:
+                kalan_tutar = round(guncel_borc['tutar'])
+            else:
+                 # Gider bitti veya borç kapandıysa 0 al, zaten bitiş kaydı yapıldı.
+                 kalan_tutar = 0
             
             # Ana sütun: Kalan Tutar (görselleştirme için TAMAMLANDI ibaresi eklendi)
             if kalan_tutar <= 1 and b['min_kural'] not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']:
                 aylik_veri[f'{isim} (Kalan Borç/Gider)'] = "TAMAMLANDI"
-            elif b['min_kural'] in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER'] and b['kalan_ay'] < 99999 and b['kalan_ay'] <= 0:
+            elif b['min_kural'] in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER'] and kalan_tutar <= 1 and b.get('kalan_ay', 1) <= 0:
                  aylik_veri[f'{isim} (Kalan Borç/Gider)'] = "TAMAMLANDI"
             else:
                  aylik_veri[f'{isim} (Kalan Borç/Gider)'] = kalan_tutar
             
             # Faizli Borçlar için Ödeme Detayları
-            if b['min_kural'] not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']:
+            if b['min_kural'] not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER'] and guncel_borc:
                 durum = faizli_borc_durumlari.get(isim, {})
                 aylik_veri[f'{isim} (Ek Ödeme)'] = ek_odeme_dagilimi.get(isim, 0)
                 aylik_veri[f'{isim} (Faiz)'] = durum.get('faiz', 0)
                 aylik_veri[f'{isim} (Anapara Min)'] = durum.get('anapara_min_odeme', 0)
                 
             # Sabit Giderler için Taksit Detayı
-            elif b['min_kural'] in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']:
-                 aylik_veri[f'{isim} (Taksit/Gider)'] = round(b['sabit_taksit']) if b['kalan_ay'] > 0 else 0
+            elif b['min_kural'] in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER'] and guncel_borc:
+                 aylik_veri[f'{isim} (Taksit/Gider)'] = round(guncel_borc['sabit_taksit']) if guncel_borc['kalan_ay'] > 0 else 0
 
 
         aylik_detaylar.append(aylik_veri)
@@ -737,7 +985,7 @@ if calculate_button_advanced or calculate_button_basic:
         manuel_oncelikler = {}
         sim_params = {'agresiflik_carpan': STRATEJILER[varsayilan_agresiflik_str], 'oncelik_stratejisi': ONCELIK_STRATEJILERI[varsayilan_oncelik_str], 'faiz_carpani': 1.0, 'birikim_artis_aylik': st.session_state.get('default_aylik_artis', 3.5), 'aylik_zorunlu_birikim': AYLIK_ZORUNLU_BIRIKIM_BASIC if BIRIKIM_TIPI_BASIC == "Aylık Sabit Tutar" else 0, 'baslangic_birikim': BASLANGIC_BIRIKIM_BASIC}
     
-    sim_params['total_birikim_hedefi'] = total_birikim_hedefi
+    sim_params['total_birikim_hedesi'] = total_birikim_hedefi
     sim_params['birikim_tipi_str'] = birikim_tipi_str
 
 
