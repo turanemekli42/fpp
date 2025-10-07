@@ -498,7 +498,13 @@ def render_debt_form(context):
                                       "--- Diğer Faizli Borçlar ---",
                                       "Diğer Faizli Borç"], key=f'debt_type_{context}')
             
+            # --- Mantık Değişkenleri ---
             is_faizli_borc_ve_ek_odemeli = debt_type in ["Kredi Kartı", "Ek Hesap (KMH)", "Kredi (Sabit Taksit)", "Diğer Faizli Borç"]
+            is_faizli_borc = debt_type in ["Kredi Kartı", "Ek Hesap (KMH)", "Diğer Faizli Borç"]
+            is_sabit_gider = debt_type in ["Sabit Kira Gideri", "Fatura/Aidat Gideri", "Ev Kredisi Taksiti"]
+            is_sabit_kredi = debt_type == "Kredi (Sabit Taksit)"
+            is_kk = debt_type == "Kredi Kartı"
+            is_kmh = debt_type == "Ek Hesap (KMH)"
             
             # YENİ ÖNCELİK MANTIK BLOĞU (Sadece ek ödemeli borçlar için görünür)
             debt_priority_str = ""
@@ -523,14 +529,7 @@ def render_debt_form(context):
                     st.info("İlk ek ödemeye açık borcunuz bu olacak.")
                     debt_priority_str = "1. En Yüksek Öncelik (Her Şeyden Önce)"
             
-        # --- Mantık Değişkenleri ---
-        is_faizli_borc = debt_type in ["Kredi Kartı", "Ek Hesap (KMH)", "Diğer Faizli Borç"]
-        is_sabit_gider = debt_type in ["Sabit Kira Gideri", "Fatura/Aidat Gideri", "Ev Kredisi Taksiti"]
-        is_sabit_kredi = debt_type == "Kredi (Sabit Taksit)"
-        is_kk = debt_type == "Kredi Kartı"
-        is_kmh = debt_type == "Ek Hesap (KMH)"
-        
-        # --- COL F2: Tutar ve Süre Bilgileri (Koşullu Gösterim) ---
+        # --- COL F2: Tutar ve Süre Bilgileri (Koşullu GÖSTERİM & GRİLEŞTİRME) ---
         with col_f2:
             initial_faizli_tutar = 0.0
             debt_taksit = 0.0
@@ -538,42 +537,48 @@ def render_debt_form(context):
 
             # Faizli Kalan Borç Anaparası
             if is_faizli_borc or is_sabit_kredi:
-                initial_faizli_tutar = st.number_input("Faizli Kalan Borç Anaparası", min_value=0.0, value=50000.0, key=f'initial_tutar_{context}')
+                 initial_faizli_tutar = st.number_input("Faizli Kalan Borç Anaparası", min_value=0.0, value=50000.0 if not is_sabit_gider else 0.0, key=f'initial_tutar_{context}', disabled=is_sabit_gider)
                 
-            # Aylık Taksit/Gider Tutarı (Sabit Giderler ve Sabit Krediler)
-            if is_sabit_gider or is_sabit_kredi:
-                debt_taksit = st.number_input("Aylık Zorunlu Taksit/Gider Tutarı", min_value=1.0, value=5000.0, key=f'sabit_taksit_{context}')
+            # Aylık Taksit/Gider Tutarı (Her zaman görünür, alakasızken 0'a çekilir)
+            is_taksit_disabled = not (is_sabit_gider or is_sabit_kredi or is_kk)
+            default_taksit = 5000.0 if not is_taksit_disabled else 0.0
+            debt_taksit = st.number_input("Aylık Zorunlu Taksit/Gider Tutarı", min_value=0.0, value=default_taksit, key=f'sabit_taksit_{context}', disabled=is_taksit_disabled)
             
             # Kredi Kartı Taksit Alanları
             if is_kk:
                 st.info("KK taksitleri ve dönem borcu ayrılacaktır.")
-                debt_taksit = st.number_input("KK Taksitli Alışverişlerin Aylık Ödemesi", min_value=0.0, value=5000.0, key=f'kk_taksit_aylik_{context}')
-                debt_kalan_ay = st.number_input("KK Taksitlerin Ortalama Kalan Ayı", min_value=1, value=12, key=f'kk_taksit_kalan_ay_{context}')
+                # KK Taksit Aylık Ödeme (Zaten yukarıdaki alanda giriliyor, burayı sadeleştirelim)
+                debt_kalan_ay = st.number_input("KK Taksitlerin Ortalama Kalan Ayı", min_value=1, value=12, key=f'kk_taksit_kalan_ay_{context}', disabled=not is_kk)
 
             # Kredi Kalan Ay Bilgisi
+            is_kalan_ay_disabled = not is_sabit_kredi
             if is_sabit_kredi:
-                debt_kalan_ay = st.number_input("Kredi Kalan Taksit Ayı", min_value=1, value=12, key=f'kalan_taksit_ay_{context}')
-                
-        # --- COL F3: Faiz ve Asgari Ödeme Bilgileri (Koşullu Gösterim) ---
+                 debt_kalan_ay = st.number_input("Kredi Kalan Taksit Ayı", min_value=1, value=12, key=f'kalan_taksit_ay_{context}', disabled=is_kalan_ay_disabled)
+                 
+        # --- COL F3: Faiz ve Asgari Ödeme Bilgileri (Koşullu GÖSTERİM & GRİLEŞTİRME) ---
         with col_f3:
             debt_faiz_aylik = 0.0
             debt_kk_asgari_yuzdesi = 0.0
             debt_zorunlu_anapara_yuzdesi = 0.0
             
             # Aylık Faiz Oranı
-            if is_faizli_borc and not is_sabit_kredi: # Kredinin faizi simülasyonda kullanılır, girişi gizlenir
-                debt_faiz_aylik = st.number_input("Aylık Faiz Oranı (%)", value=5.0, step=0.05, min_value=0.0, key=f'debt_faiz_aylik_{context}') / 100.0
+            is_faiz_disabled = not is_faizli_borc
+            faiz_default = 5.0 if not is_faiz_disabled else 0.0
+            debt_faiz_aylik = st.number_input("Aylık Faiz Oranı (%)", value=faiz_default, step=0.05, min_value=0.0, key=f'debt_faiz_aylik_{context}', disabled=is_faiz_disabled) / 100.0
                 
             # Kredi Kartı Asgari Ödeme
-            if is_kk:
-                debt_kk_asgari_yuzdesi = st.number_input("KK Asgari Ödeme Anapara Yüzdesi (%)", value=5.0, step=1.0, min_value=0.0, key=f'kk_asgari_{context}') / 100.0
+            is_kk_asgari_disabled = not is_kk
+            kk_asgari_default = 5.0 if not is_kk_asgari_disabled else 0.0
+            debt_kk_asgari_yuzdesi = st.number_input("KK Asgari Ödeme Anapara Yüzdesi (%)", value=kk_asgari_default, step=1.0, min_value=0.0, key=f'kk_asgari_{context}', disabled=is_kk_asgari_disabled) / 100.0
             
             # Ek Hesap Zorunlu Anapara
-            if is_kmh:
-                 debt_zorunlu_anapara_yuzdesi = st.number_input("KMH Zorunlu Anapara Kapama Yüzdesi (%)", value=5.0, step=1.0, min_value=0.0, key=f'kmh_anapara_{context}') / 100.0
+            is_kmh_anapara_disabled = not is_kmh
+            kmh_anapara_default = 5.0 if not is_kmh_anapara_disabled else 0.0
+            debt_zorunlu_anapara_yuzdesi = st.number_input("KMH Zorunlu Anapara Kapama Yüzdesi (%)", value=kmh_anapara_default, step=1.0, min_value=0.0, key=f'kmh_anapara_{context}', disabled=is_kmh_anapara_disabled) / 100.0
                 
         submit_button = st.form_submit_button(label="Yükümlülüğü Ekle")
         if submit_button:
+            # Formun gönderiminde, disabled alanların 0 olması gerektiğini varsayarak gönderiyoruz
             add_debt(debt_name, initial_faizli_tutar, debt_priority_str, debt_type, debt_taksit, debt_kalan_ay, debt_faiz_aylik, debt_kk_asgari_yuzdesi, debt_zorunlu_anapara_yuzdesi)
 
 
@@ -797,3 +802,4 @@ if calculate_button_basic or calculate_button_adv:
     # Detaylı Tablo
     st.subheader("Aylık Detaylı Plan")
     st.dataframe(all_scenarios[list(all_scenarios.keys())[0]]['df'], use_container_width=True)
+
