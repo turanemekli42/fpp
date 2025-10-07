@@ -40,10 +40,13 @@ def format_tl(tutar):
 
 def create_save_data():
     """st.session_state'i JSON formatında hazırlar."""
+    # KRİTİK DÜZELTME: DataFrame'i JSON uyumlu sözlüğe dönüştür
+    harcama_df_dict = st.session_state.harcama_kalemleri_df.to_dict() 
+    
     data = {
         'borclar': st.session_state.borclar,
         'gelirler': st.session_state.gelirler,
-        'harcama_kalemleri_df': st.session_state.harcama_kalemleri_df.to_dict(),
+        'harcama_kalemleri_df': harcama_df_dict, # Artık sözlük formatında
         'tr_params': st.session_state.tr_params,
         'manuel_oncelik_listesi': st.session_state.manuel_oncelik_listesi
     }
@@ -196,7 +199,6 @@ def render_income_form(context):
         
         with col_i1:
             income_name = st.text_input("Gelir Kaynağı Adı", value="Maaş/Kira Geliri", key=f'inc_name_{context}')
-            # Veri Kontrolü: Tutar > 1.0 olmalı
             income_amount = st.number_input("Aylık Tutar", min_value=1.0, value=25000.0, key=f'inc_amount_{context}') 
             
         with col_i2:
@@ -548,15 +550,36 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **s
         aktif_borclar_sonraki_ay = []
         serbest_kalan_nakit_bu_ay = 0.0
         kapanan_giderler_listesi = []
-        
-        aylik_kapanan_borclar = [] # Bu ay kapanan borçların isimlerini tutar
+        aylik_kapanan_borclar = [] 
 
-        # Her borç için başlangıç detaylarını al
-        borc_kalanlar_ay_basi = {b['isim']: b['tutar'] for b in mevcut_borclar if b.get('min_kural') not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']}
+        faizli_borc_durumlari = {} 
 
         for borc in mevcut_borclar:
+            min_odeme_miktar = hesapla_min_odeme(borc, faiz_carpani)
             is_sureli_gider = borc['min_kural'] in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER', 'SABIT_TAKSIT_ANAPARA'] and borc.get('kalan_ay', 99999) < 99999
             
+            if borc['min_kural'] in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']:
+                zorunlu_gider_toplam += min_odeme_miktar
+                
+            else: # Faizli Borçlar
+                min_borc_odeme_toplam += min_odeme_miktar
+                
+                # Faiz Uygulama
+                etkilenen_faiz_orani = borc['faiz_aylik'] * faiz_carpani
+                eklenen_faiz = borc['tutar'] * etkilenen_faiz_orani
+                toplam_faiz_maliyeti += eklenen_faiz
+                borc['tutar'] += eklenen_faiz
+                
+                # Min Ödeme Çıkarma
+                borc['tutar'] -= min_odeme_miktar
+                
+                faizli_borc_durumlari[borc['isim']] = {
+                    'faiz': round(eklenen_faiz),
+                    'anapara_min_odeme': round(min_odeme_miktar - eklenen_faiz) if borc['min_kural'] == 'SABIT_TAKSIT_ANAPARA' and (min_odeme_miktar - eklenen_faiz) > 0 else round(min_odeme_miktar * borc.get('zorunlu_anapara_yuzdesi', 0.0))
+                }
+
+
+            # Giderlerin Kapanması ve Yeniden Atanması
             if is_sureli_gider:
                 if borc['kalan_ay'] == 1:
                     odenen_miktar = borc.get('sabit_taksit', 0)
@@ -577,36 +600,6 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **s
                 
         mevcut_borclar = aktif_borclar_sonraki_ay
         
-        # --- Minimum Ödeme Hesaplama (Giderler ve Borçlar) ---
-        
-        # Borçlar için faiz ve zorunlu anapara ödemesi öncesi/sonrası durumu takip et
-        faizli_borc_durumlari = {} 
-
-        for borc in mevcut_borclar:
-            min_odeme = hesapla_min_odeme(borc, faiz_carpani)
-            
-            if borc['min_kural'] in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']:
-                zorunlu_gider_toplam += min_odeme
-                
-            else: # Faizli Borçlar
-                min_borc_odeme_toplam += min_odeme
-                
-                # Faiz Uygulama
-                kalan_tutar_once = borc['tutar']
-                etkilenen_faiz_orani = borc['faiz_aylik'] * faiz_carpani
-                eklenen_faiz = borc['tutar'] * etkilenen_faiz_orani
-                toplam_faiz_maliyeti += eklenen_faiz
-                borc['tutar'] += eklenen_faiz
-                
-                # Min Ödeme Çıkarma
-                borc['tutar'] -= min_odeme
-                
-                faizli_borc_durumlari[borc['isim']] = {
-                    'faiz': round(eklenen_faiz),
-                    'anapara_min_odeme': round(min_odeme - eklenen_faiz if borc['min_kural'] == 'SABIT_TAKSIT_ANAPARA' else min_odeme), # Sadece faizli borçların anapara kısmını (tahmini) hesapla
-                    'kalan_tutar_min_odeme_sonrasi': round(borc['tutar'])
-                }
-
         # --- Saldırı Gücü Hesaplama ---
         if ay_sayisi == 1:
             ilk_ay_toplam_gelir = toplam_gelir
@@ -647,47 +640,45 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **s
         mevcut_birikim *= (1 + birikim_artis_aylik)
 
         
-        # --- DETAYLI RAPORLAMA OLUŞTURMA ---
+        # --- DETAYLI RAPORLAMA OLUŞTURMA (Her Kalem Ayrı Sütun) ---
         
-        # Tüm borçların/giderlerin durumunu içeren tek bir satır oluştur.
         aylik_veri = {
             'Ay': ay_adi,
             'Toplam Gelir': round(toplam_gelir),
             'Toplam Gider': round(zorunlu_gider_toplam + min_borc_odeme_toplam),
             'Ek Ödeme Gücü': round(saldırı_gucu),
-            'Kapanan Kalemler': ", ".join(aylik_kapanan_borclar + kapanan_giderler_listesi) if aylik_kapanan_borclar or kapanan_giderler_listesi else '-',
-            'Aylık Birikim Katkısı': round(birikime_ayrilan + saldırı_kalan + serbest_kalan_nakit_bu_ay),
             'Toplam Birikim': round(mevcut_birikim)
         }
 
-        # Detaylı Borç Kalemlerini Ekle
+        # Detaylı Borç/Gider Kalemlerini Ekle
         for b in mevcut_borclar:
-            kalan_tutar = round(b['tutar'])
             isim = b['isim']
+            kalan_tutar = round(b['tutar'])
             
-            # Ana sütun: Kalan Tutar
+            # Ana sütun: Kalan Tutar (görselleştirme için TAMAMLANDI ibaresi eklendi)
             if kalan_tutar <= 1 and b['min_kural'] not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']:
-                aylik_veri[f'{isim} (Kalan)'] = "TAMAMLANDI"
+                aylik_veri[f'{isim} (Kalan Borç)'] = "TAMAMLANDI"
             elif b['min_kural'] in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER'] and b['kalan_ay'] < 99999 and b['kalan_ay'] <= 0:
-                 aylik_veri[f'{isim} (Kalan)'] = "TAMAMLANDI"
+                 aylik_veri[f'{isim} (Kalan Gider)'] = "TAMAMLANDI"
             else:
-                 aylik_veri[f'{isim} (Kalan)'] = kalan_tutar
+                 aylik_veri[f'{isim} (Kalan Borç/Gider)'] = kalan_tutar
             
-            # Faizli Borçlar için Detaylar
+            # Faizli Borçlar için Ödeme Detayları
             if b['min_kural'] not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']:
                 durum = faizli_borc_durumlari.get(isim, {})
                 aylik_veri[f'{isim} (Ek Ödeme)'] = ek_odeme_dagilimi.get(isim, 0)
                 aylik_veri[f'{isim} (Faiz)'] = durum.get('faiz', 0)
                 aylik_veri[f'{isim} (Anapara Min)'] = durum.get('anapara_min_odeme', 0)
-            else:
-                 # Sabit Giderler için sadece ödenen tutarı göster (Giderler zaten gider sütununda toplu)
+                
+            # Sabit Giderler için Taksit Detayı
+            elif b['min_kural'] in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']:
                  aylik_veri[f'{isim} (Taksit/Gider)'] = round(b['sabit_taksit']) if b['kalan_ay'] > 0 else 0
 
 
         aylik_detaylar.append(aylik_veri)
     
     # Detaylı DF'i oluştur
-    df_detay = pd.DataFrame(aylik_detaylar)
+    df_detay = pd.DataFrame(aylik_detaylar).fillna(0)
     
     return {"df": df_detay, "ay_sayisi": ay_sayisi, "toplam_faiz": round(toplam_faiz_maliyeti), "toplam_birikim": round(mevcut_birikim), "baslangic_faizli_borc": round(baslangic_faizli_borc), "ilk_ay_gelir": ilk_ay_toplam_gelir if 'ilk_ay_toplam_gelir' in locals() else 0, "ilk_ay_gider": ilk_ay_toplam_gider if 'ilk_ay_toplam_gider' in locals() else 0, "limit_asimi": limit_asimi}
 
@@ -705,8 +696,6 @@ def run_alternative_scenario(borclar, gelirler, current_params, new_strategy_nam
         'oncelik_stratejisi': oncelik_stratejisi
     })
     
-    # total_birikim_hedefi ve birikim_tipi_str sim_params içinden zaten geliyor
-    # Yeni imza ile çağır:
     sonuc = simule_borc_planı(borclar, gelirler, {}, **sim_params)
     
     return {
@@ -721,7 +710,6 @@ def generate_report_and_recommendations(sonuc, current_params):
     # 1. Alternatif Senaryoların Çalıştırılması
     alternatifler = []
     
-    # Güvenli Strateji ve Agresiflik Adı Çekimi
     current_strat_list = [k for k, v in ONCELIK_STRATEJILERI.items() if v == current_params['oncelik_stratejisi']]
     current_strat = current_strat_list[0] if current_strat_list else "Kullanıcı Tanımlı Sıra"
     is_avalanche = current_strat.startswith("Borç Çığı")
@@ -786,10 +774,15 @@ def generate_report_and_recommendations(sonuc, current_params):
 
 
 # --- 7. Ana Uygulama Düzeni ---
-st.title("Borç Kapatma ve Finansal Ödeme Planı (Turan Emekli)")
+st.title("Borç Kapatma ve Finansal Ödeme Planı")
 
 # --- KRİTİK ALAN: YÜKLEME VE KAYDETME ---
 st.header("🗂️ Profil Yönetimi (Yerel Kayıt)")
+st.info("""
+    Bu uygulama, verilerinizi hiçbir sunucuda saklamaz. Verilerinizin kalıcı olması için:
+    1. Uygulamadan çıkmadan önce **Mevcut Verileri İndir (Yedekleme)** butonuna basın.
+    2. Geri dönmek istediğinizde indirdiğiniz JSON dosyasını **Yedekleme Dosyasını Yükle** alanına sürükleyip bırakın.
+""")
 col_load, col_save = st.columns(2)
 
 # YÜKLEME ALANI
@@ -818,6 +811,38 @@ tab_basic, tab_advanced, tab_rules = st.tabs(["✨ Basit Planlama (Başlangıç)
 # --- TAB 2: Basit Planlama ---
 with tab_basic:
     st.header("✨ Hızlı ve Varsayılan Planlama")
+    
+    st.markdown("---")
+    st.header("📢 Finansal Özgürlük Manifestosu")
+    st.markdown("""
+        Bu araç, finansal geleceğinizin kontrolünü elinize almanız için tasarlandı. Borçlar, zincirler değildir; doğru stratejiyle aşılabilecek engellerdir.
+        
+        **Amacımız:** Sadece borç kapatmak değil, her ödemenizde birikim hedefinize ne kadar yaklaştığınızı net bir şekilde görmektir. Kaynağı ne olursa olsun, **paranızın akışını yöneten kişi siz olun.**
+        
+        Bu plan, mevcut durumunuzu kabul edip, belirlediğiniz agresiflik seviyesine göre **minimum faiz maliyeti** ve **en kısa sürede** borçsuzluğa ulaşmanız için bir yol haritası sunar.
+    """)
+    
+    with st.expander("📄 Detaylı Kullanım Kılavuzunu Gör (3 Adım)"):
+        st.subheader("Adım 1: Gelir ve Yükümlülükleri (Borçlar/Giderler) Tanımlama")
+        st.markdown("""
+        * **Gelir Kaynağı Ekle:** Net aylık gelirlerinizi ve bu gelirin beklenen **Yıllık Artış Yüzdesini** girin. Başlangıç Ayı'nı (1=Şimdi) doğru girdiğinizden emin olun. Tek seferlik gelirler (ikramiye/bonus) de eklenebilir.
+        * **Borçları ve Giderleri Yönet:** Tüm finansal yükümlülüklerinizi ekleyin. **Kredi Kartı Dönem Borcu (Faizli)** için sadece kalan anaparanızı girin; faiz ve asgari ödeme yüzdesi Yönetici Kurallarından otomatik çekilecektir. Zorunlu sabit giderler (Kira, KK Taksitleri) için Taksit Tutarını ve **Kalan Ay**'ı (Süresiz ise 99999 olarak kabul edilir) girin.
+        """)
+        
+        st.subheader("Adım 2: Stratejinizi Belirleme")
+        st.markdown("""
+        * **Ek Ödeme Agresifliği:** Aylık zorunlu ödemeleriniz ve giderlerinizden arta kalan nakdin yüzde kaçını borç kapatmaya yönlendireceğinizi belirler. **Maksimum Çaba**, en hızlı kapanmayı sağlar.
+        * **Borç Kapatma Yöntemi:** * **Borç Çığı (Avalanche):** Faiz oranı en yüksek olandan başlar. **En çok faiz tasarrufu** sağlar.
+            * **Borç Kartopu (Snowball):** Tutarı en küçük olandan başlar. **En yüksek motivasyonu** sağlar.
+        """)
+        
+        st.subheader("Adım 3: Raporu İnceleme ve Yorumlama")
+        st.markdown("""
+        * **Karşılaştırmalı Özet:** Mevcut planınız ile alternatif (Agresiflik/Öncelik değiştirilmiş) planların **toplam faiz maliyeti** ve **kapanma süresi** farkını görerek stratejinizi optimize edin.
+        * **Aylık Detaylar:** "Aylık Ödeme Planı Detayları" tablosunda, her ay için **her borç/gider kaleminizin** kalan tutarını, o ay ödenen faizi ve ek ödeme miktarını görebilirsiniz. Borcu biten kalemler **"🟢 TAMAMLANDI"** olarak işaretlenir. Bu tabloyu Excel'e indirerek daha detaylı analiz yapabilirsiniz.
+        """)
+
+    st.markdown("---")
     
     col_st1, col_st2 = st.columns(2)
     with col_st1:
@@ -1001,10 +1026,9 @@ if calculate_button_advanced or calculate_button_basic:
             # --- DETAYLI TABLO VE EXCEL İNDİRME ---
             st.subheader("📋 Aylık Ödeme Planı Detayları (Kalem Bazlı Akış)")
             
-            # Tamamlandı ibaresini stil için ayarla
             styled_df = sonuc['df'].copy()
             for col in styled_df.columns:
-                 if 'Kalan)' in col:
+                 if 'Kalan Borç/Gider)' in col or 'Kalan Borç)' in col or 'Kalan Gider)' in col:
                      styled_df[col] = styled_df[col].apply(lambda x: "🟢 TAMAMLANDI" if x == "TAMAMLANDI" else (format_tl(x) if isinstance(x, (int, float)) else x))
             
             col_res1, col_res2 = st.columns([3, 1])
@@ -1018,3 +1042,11 @@ if calculate_button_advanced or calculate_button_basic:
             
             with col_res1:
                 st.dataframe(styled_df, hide_index=True)
+                
+# --- DIPNOT VE TELİF ---
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; font-size: small; color: gray;'>
+    Bu gelişmiş finansal planlama aracı, Turan Emekli tarafından bireysel finansal stratejileri güçlendirmek amacıyla titizlikle hazırlanmıştır.
+</div>
+""", unsafe_allow_html=True)
