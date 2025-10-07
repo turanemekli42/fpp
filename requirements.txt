@@ -1,7 +1,7 @@
+# requirements.txt içeriği
 streamlit
 pandas
-numpy
-
 python-dateutil
-Babel
 fpdf2
+numpy
+matplotlib  # YENİ EKLENEN SATIR
