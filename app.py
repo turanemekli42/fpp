@@ -3,11 +3,10 @@ import streamlit as st
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import numpy as np
-import locale
 
-# Türkçe yerel ayarlarını ayarla (para birimi ve tarih formatı için)
-locale.setlocale(locale.LC_ALL, 'tr_TR.UTF-8')
-
+# Yeni import: Babel kütüphanesini ekleyin (Dil/Format hatası çözümü için)
+from babel.numbers import format_currency 
+from babel.dates import format_date
 
 # ======================================================================
 # 0. STREAMLIT OTURUM DURUMUNU BAŞLATMA
@@ -68,12 +67,15 @@ with tab1:
     # ======================================================================
     st.header("Simülasyon Hedefleri ve Sabit Giderler")
 
+    aylar_tr = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+    aylar_map = {"Ocak": 1, "Şubat": 2, "Mart": 3, "Nisan": 4, "Mayıs": 5, "Haziran": 6, "Temmuz": 7, "Ağustos": 8, "Eylül": 9, "Ekim": 10, "Kasım": 11, "Aralık": 12}
+
+
     col_h1, col_h2 = st.columns(2)
     with col_h1:
         SIM_BASLANGIC_AYI = st.selectbox("Simülasyon Başlangıç Ayı", 
                                             options=["Ocak 2025", "Şubat 2025", "Mart 2025", "Nisan 2025", "Mayıs 2025", "Haziran 2025", "Temmuz 2025", "Ağustos 2025", "Eylül 2025", "Ekim 2025", "Kasım 2025", "Aralık 2025"], index=9)
         
-        aylar_tr = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
         sim_bas_yil = int(SIM_BASLANGIC_AYI.split()[1])
         hedef_ay_str = st.selectbox("Hedef Borç Kapatma Ayı", options=aylar_tr, index=5)
         hedef_yil = st.number_input("Hedef Borç Kapatma Yılı", min_value=sim_bas_yil, max_value=sim_bas_yil + 5, value=sim_bas_yil + 2)
@@ -84,7 +86,6 @@ with tab1:
         AYLIK_ZORUNLU_BIRIKIM = st.number_input("Aylık Zorunlu Birikim (Borç varken ayrılması gereken)", value=5000, step=500, min_value=0)
         EV_KREDISI_TAKSIT = st.number_input("Ev Kredisi Taksiti (Borç değil, Sadece Giderse)", value=15000, step=1000, min_value=0)
         
-        # Agresiflik sürgüsünü kaldırdık, bu kısımdan strateji belirlemeyeceğiz.
         
     # ======================================================================
     # 1.2. DİNAMİK GELİR EKLEME ARAYÜZÜ
@@ -477,10 +478,9 @@ def simule_borc_planı(borclar_listesi, gelirler_listesi, kk_asgari_yuzdesi, fai
             'Kalan Faizli Borç Toplamı': round(kalan_faizli_borc_toplam)
         })
         
-        tum_faizli_borclar_bitti = kalan_faizli_borc_toplam <= 1
         tum_yukumlulukler_bitti = all(b['tutar'] <= 1 and b.get('kalan_ay', 0) <= 0 for b in mevcut_borclar if b['min_kural'] not in ['SABIT_TAKSIT_GIDER'])
         
-        if tum_yukumlulukler_bitti:
+        if tum_yukumlulukler_bitti or ay_sayisi >= max_iterasyon - 1:
              break
         
         ay_sayisi += 1
@@ -498,8 +498,9 @@ def simule_borc_planı(borclar_listesi, gelirler_listesi, kk_asgari_yuzdesi, fai
 # 4. PROGRAMI ÇALIŞTIRMA VE ÇIKTI GÖSTERİMİ
 # ----------------------------------------------------------------------
 
+# Babel kütüphanesi ile para formatlama (Platformlar arası uyumlu TL formatı)
 def format_tl(value):
-    return locale.currency(value, grouping=True, symbol="₺")
+    return format_currency(value, 'TRY', locale='tr_TR')
 
 if calculate_button:
     
@@ -541,6 +542,7 @@ if calculate_button:
         
         en_az_faiz = results[en_hizli_strateji]["toplam_faiz"]
         
+        # Hedef Bitiş Tarihini hesaplama (Babel'e gerek yok, sadece Python'ın datetime'ı yeterli)
         hedef_ay_no = aylar_map.get(HEDEF_BITIS_TARIHI.split()[0])
         hedef_yil_no = int(HEDEF_BITIS_TARIHI.split()[1])
         hedef_tarih = datetime(hedef_yil_no, hedef_ay_no, 1)
@@ -573,11 +575,15 @@ if calculate_button:
         if kapanis_tarihi <= hedef_tarih:
             sure_farki = relativedelta(hedef_tarih, kapanis_tarihi)
             fark_str = f"{sure_farki.years} yıl {sure_farki.months} ay" if sure_farki.years > 0 else f"{sure_farki.months} ay"
-            st.success(f"En agresif stratejide bile, borçlarınız hedeflenen **{HEDEF_BITIS_TARIHI}** tarihinden **{fark_str}** *daha erken* kapatılıyor. Hedefinizi daha iddialı belirlemeyi düşünebilirsiniz.")
+            st.success(f"En agresif stratejide, borçlarınız hedeflenen **{HEDEF_BITIS_TARIHI}** tarihinden **{fark_str}** *daha erken* kapatılıyor. Hedefinizi daha iddialı belirlemeyi düşünebilirsiniz.")
         else:
             sure_farki = relativedelta(kapanis_tarihi, hedef_tarih)
             fark_str = f"{sure_farki.years} yıl {sure_farki.months} ay" if sure_farki.years > 0 else f"{sure_farki.months} ay"
-            st.error(f"En hızlı stratejide bile, borç kapatma tarihi **{kapanis_tarihi.strftime('%Y-%m')}**, hedeflenen **{HEDEF_BITIS_TARIHI}** tarihinden **{fark_str}** *daha geç* gerçekleşiyor. Gelir/gider dengenizi gözden geçirmeniz gerekmektedir.")
+            
+            # Kapanış tarihini format_date ile Türkçe formatlayın
+            kapanis_tarihi_str = format_date(kapanis_tarihi, format='MMMM y', locale='tr_TR') 
+
+            st.error(f"En hızlı stratejide bile, borç kapatma tarihi **{kapanis_tarihi_str}**, hedeflenen **{HEDEF_BITIS_TARIHI}** tarihinden **{fark_str}** *daha geç* gerçekleşiyor. Gelir/gider dengenizi gözden geçirmeniz gerekmektedir.")
             
         # -------------------------------------------------------------
         # 4.2. DETAYLI TABLO SEÇİMİ
