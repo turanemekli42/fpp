@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import copy
 import json
 import io 
@@ -266,7 +265,6 @@ def render_debt_form(context):
                     debt_priority_str = st.selectbox("Ek Ödeme Sırası", options=secenekler, index=varsayilan_index,
                                                      help="Bu borcun, mevcut borçlara göre ek ödeme sırası neresi olmalı?", key=f'priority_select_{context}')
                 else:
-                    # HATA DÜZELTİLDİ: Fazla parantez kaldırıldı
                     debt_priority_str = "1. En Yüksek Öncelik (Her Şeyden Önce)" 
 
         # --- SÜTUN 2 & 3: DİNAMİK ALANLAR ---
@@ -284,7 +282,6 @@ def render_debt_form(context):
             with col_f2:
                 st.info("Kredi Kartı Detayları")
                 kk_limit = st.number_input("Kart Limiti", min_value=1.0, value=150000.0, key=f'kk_limit_{context}')
-                # Veri Kontrolü: Tutar > 1.0 olmalı
                 initial_faizli_tutar = st.number_input("Kalan Faizli Dönem Borcu (Anapara)", min_value=1.0, value=30000.0, key=f'kk_ekstre_{context}')
             with col_f3:
                 st.info("Faiz Bilgisi (Yönetici Kuralları)")
@@ -305,7 +302,6 @@ def render_debt_form(context):
             with col_f2:
                 st.info("Ek Hesap (KMH) Detayları")
                 kmh_limit_placeholder = st.number_input("Ek Hesap Limiti", min_value=1.0, value=50000.0, key=f'kmh_limit_{context}')
-                # Veri Kontrolü: Tutar > 1.0 olmalı
                 initial_faizli_tutar = st.number_input("Kullanılan Anapara Tutarı", min_value=1.0, value=15000.0, key=f'initial_tutar_{context}')
             with col_f3:
                 st.info("Faiz Bilgileri")
@@ -320,7 +316,6 @@ def render_debt_form(context):
             
             with col_f2:
                 st.info("Kredi Detayları")
-                # Veri Kontrolü: Tutar > 1.0 olmalı
                 initial_faizli_tutar = st.number_input("Kalan Anapara Tutarı", min_value=1.0, value=50000.0, key=f'initial_tutar_{context}')
                 debt_taksit = st.number_input("Aylık Taksit Tutarı", min_value=0.0, value=5000.0, key=f'sabit_taksit_{context}')
             with col_f3:
@@ -337,7 +332,6 @@ def render_debt_form(context):
             
             with col_f2:
                 st.info("Borç Detayları")
-                # Veri Kontrolü: Tutar > 1.0 olmalı
                 initial_faizli_tutar = st.number_input("Kalan Anapara Tutarı", min_value=1.0, value=10000.0, key=f'initial_tutar_{context}')
                 debt_taksit = 0.0
                 debt_kalan_ay = 99999 
@@ -668,7 +662,7 @@ def generate_report_and_recommendations(sonuc, current_params):
     
     # a) Öncelik Tersine Çevirme (Avalanche vs Snowball)
     if current_strat == "Kullanıcı Tanımlı Sıra":
-        alt_strat_name = "Borç Çığı (Avalanche - Önce Faiz)" # Manuelde hep Avalanche/Snowball'dan birini dener
+        alt_strat_name = "Borç Çığı (Avalanche - Önce Faiz)" 
     elif is_avalanche:
         alt_strat_name = "Borç Kartopu (Snowball - Önce Tutar)"
     else:
@@ -677,7 +671,7 @@ def generate_report_and_recommendations(sonuc, current_params):
     current_agresiflik_name = [k for k, v in STRATEJILER.items() if v == current_params['agresiflik_carpan']][0]
 
     try:
-        if current_strat != alt_strat_name: # Zaten bu strateji seçiliyse tekrar çalıştırma
+        if current_strat != alt_strat_name: 
             alternatifler.append(run_alternative_scenario(st.session_state.borclar, st.session_state.gelirler, current_params, alt_strat_name, current_agresiflik_name))
     except: pass
         
@@ -711,12 +705,11 @@ def generate_report_and_recommendations(sonuc, current_params):
         
         if faiz_farki > 0 and süre_farki >= 0:
             tavsiyeler.append(f"💰 **DAHA UCUZ/HIZLI FIRSAT:** '{alt['isim'].split('(')[0].strip()}' stratejisini uygularsanız, borç sürenizi **{süre_farki} ay** kısaltabilir ve **{format_tl(faiz_farki)}** ek faiz tasarrufu sağlayabilirsiniz.")
-        elif süre_farki > 0 and faiz_farki > -(sonuc['toplam_faiz'] * 0.05): # Süre kısalıyor ve faiz %5'ten az artıyorsa öner
+        elif süre_farki > 0 and faiz_farki > -(sonuc['toplam_faiz'] * 0.05):
              tavsiyeler.append(f"⏱️ **MOTİVASYON KAZANCI:** '{alt['isim'].split('(')[0].strip()}' stratejisi ile borçlarınızı **{süre_farki} ay** daha erken kapatabilirsiniz. Bu, motivasyonunuzu artırabilir!")
 
     # 3. Excel İndirme İçin DataFrame Hazırlığı
     excel_data = io.BytesIO()
-    # Excel tablosuna rapor özeti ve ayarlar eklenebilir. Şimdilik sadece ana DF'i ekleyelim.
     with pd.ExcelWriter(excel_data, engine='xlsxwriter') as writer:
         sonuc['df'].to_excel(writer, index=False, sheet_name='Aylık Finansal Akış')
         
@@ -844,7 +837,7 @@ with tab_rules:
     st.header("Simülasyon Kurallarını Yönet")
     
     st.subheader("Basit Planlama Varsayılanlarını Ayarla")
-    st.session_state['default_agressiflik'] = st.selectbox("Varsayılan Ek Ödeme Agresifliği", options=list(STRATEJILER.keys()), index=2, key='default_agressiflik_rule')
+    st.session_state['default_agresiflik'] = st.selectbox("Varsayılan Ek Ödeme Agresifliği", options=list(STRATEJILER.keys()), index=2, key='default_agressiflik_rule')
     st.session_state['default_oncelik'] = st.selectbox("Varsayılan Borç Kapatma Yöntemi", options=list(ONCELIK_STRATEJILERI.keys()), index=0, key='default_oncelik_rule')
     st.session_state['default_aylik_artis'] = st.number_input("Varsayılan Birikim Yıllık Artışı (%)", value=3.5, min_value=0.0, step=0.1, key='default_aylik_artis_rule')
     
@@ -881,18 +874,24 @@ with tab_rules:
 
 if calculate_button_advanced or calculate_button_basic:
     
+    # --- 1. Parametreleri Hazırla ---
     if calculate_button_advanced:
         total_birikim_hedefi = TOPLAM_BIRIKIM_HEDEFI_ADVANCED
         birikim_tipi_str = BIRIKIM_TIPI_ADVANCED
         manuel_oncelikler = st.session_state.manuel_oncelik_listesi
-        sim_params = {'agresiflik_carpan': STRATEJILER[AGRESIFLIK_ADVANCED], 'oncelik_stratejisi': ONCELIK_STRATEJILERI[ONCELIK_ADVANCED], 'faiz_carpani': FAIZ_CARPANI_ADVANCED, 'birikim_artis_aylik': AYLIK_ARTIS_ADVANCED, 'aylik_zorunlu_birikim': AYLIK_ZORUNLU_BIRIKIM_ADVANCED if BIRIKIM_TIPI_ADVANCED == "Aylık Sabit Tutar" else 0, 'baslangic_birikim': BASLANGIC_BIRIKIM_ADVANCED, 'total_birikim_hedefi': total_birikim_hedefi, 'birikim_tipi_str': birikim_tipi_str}
+        sim_params = {'agresiflik_carpan': STRATEJILER[AGRESIFLIK_ADVANCED], 'oncelik_stratejisi': ONCELIK_STRATEJILERI[ONCELIK_ADVANCED], 'faiz_carpani': FAIZ_CARPANI_ADVANCED, 'birikim_artis_aylik': AYLIK_ARTIS_ADVANCED, 'aylik_zorunlu_birikim': AYLIK_ZORUNLU_BIRIKIM_ADVANCED if BIRIKIM_TIPI_ADVANCED == "Aylık Sabit Tutar" else 0, 'baslangic_birikim': BASLANGIC_BIRIKIM_ADVANCED}
     else: # Basit Planlama
         varsayilan_agresiflik_str = st.session_state.get('default_agressiflik', 'Maksimum Çaba (Tüm Ek Ödeme)')
         varsayilan_oncelik_str = st.session_state.get('default_oncelik', 'Borç Çığı (Avalanche - Önce Faiz)')
         total_birikim_hedefi = TOPLAM_BIRIKIM_HEDEFI_BASIC
         birikim_tipi_str = BIRIKIM_TIPI_BASIC
         manuel_oncelikler = {}
-        sim_params = {'agresiflik_carpan': STRATEJILER[varsayilan_agresiflik_str], 'oncelik_stratejisi': ONCELIK_STRATEJILERI[varsayilan_oncelik_str], 'faiz_carpani': 1.0, 'birikim_artis_aylik': st.session_state.get('default_aylik_artis', 3.5), 'aylik_zorunlu_birikim': AYLIK_ZORUNLU_BIRIKIM_BASIC if BIRIKIM_TIPI_BASIC == "Aylık Sabit Tutar" else 0, 'baslangic_birikim': BASLANGIC_BIRIKIM_BASIC, 'total_birikim_hedefi': total_birikim_hedefi, 'birikim_tipi_str': birikim_tipi_str}
+        sim_params = {'agresiflik_carpan': STRATEJILER[varsayilan_agresiflik_str], 'oncelik_stratejisi': ONCELIK_STRATEJILERI[varsayilan_oncelik_str], 'faiz_carpani': 1.0, 'birikim_artis_aylik': st.session_state.get('default_aylik_artis', 3.5), 'aylik_zorunlu_birikim': AYLIK_ZORUNLU_BIRIKIM_BASIC if BIRIKIM_TIPI_BASIC == "Aylık Sabit Tutar" else 0, 'baslangic_birikim': BASLANGIC_BIRIKIM_BASIC}
+    
+    # KRİTİK DÜZELTME: Zorunlu parametreleri sim_params içine ekle
+    sim_params['total_birikim_hedefi'] = total_birikim_hedefi
+    sim_params['birikim_tipi_str'] = birikim_tipi_str
+
 
     # Ana Simülasyonu Çalıştır
     sonuc = simule_borc_planı(st.session_state.borclar, st.session_state.gelirler, manuel_oncelikler, total_birikim_hedefi, birikim_tipi_str, **sim_params)
