@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import numpy as np # Artık kullanılmasa da bazı yerlerde pandas'ın bağımlılığı nedeniyle tutulabilir, ancak temizlik için kaldırıldı.
+import numpy as np
 import copy
 import json
 import io 
@@ -198,7 +198,7 @@ def render_income_form(context):
         
         with col_i1:
             income_name = st.text_input("Gelir Kaynağı Adı", value="Maaş/Kira Geliri", key=f'inc_name_{context}')
-            # Veri Kontrolü: Tutar > 0 olmalı
+            # Veri Kontrolü: Tutar > 1.0 olmalı
             income_amount = st.number_input("Aylık Tutar", min_value=1.0, value=25000.0, key=f'inc_amount_{context}') 
             
         with col_i2:
@@ -266,8 +266,8 @@ def render_debt_form(context):
                     debt_priority_str = st.selectbox("Ek Ödeme Sırası", options=secenekler, index=varsayilan_index,
                                                      help="Bu borcun, mevcut borçlara göre ek ödeme sırası neresi olmalı?", key=f'priority_select_{context}')
                 else:
-                    st.info("İlk ek ödemeye açık borcunuz bu olacak.")
-                    debt_priority_str = "1. En Yüksek Öncelik (Her Şeyden Önce)")
+                    # HATA DÜZELTİLDİ: Fazla parantez kaldırıldı
+                    debt_priority_str = "1. En Yüksek Öncelik (Her Şeyden Önce)" 
 
         # --- SÜTUN 2 & 3: DİNAMİK ALANLAR ---
         
@@ -283,8 +283,8 @@ def render_debt_form(context):
             
             with col_f2:
                 st.info("Kredi Kartı Detayları")
-                # Veri Kontrolü: Tutar > 1.0 olmalı
                 kk_limit = st.number_input("Kart Limiti", min_value=1.0, value=150000.0, key=f'kk_limit_{context}')
+                # Veri Kontrolü: Tutar > 1.0 olmalı
                 initial_faizli_tutar = st.number_input("Kalan Faizli Dönem Borcu (Anapara)", min_value=1.0, value=30000.0, key=f'kk_ekstre_{context}')
             with col_f3:
                 st.info("Faiz Bilgisi (Yönetici Kuralları)")
@@ -305,6 +305,7 @@ def render_debt_form(context):
             with col_f2:
                 st.info("Ek Hesap (KMH) Detayları")
                 kmh_limit_placeholder = st.number_input("Ek Hesap Limiti", min_value=1.0, value=50000.0, key=f'kmh_limit_{context}')
+                # Veri Kontrolü: Tutar > 1.0 olmalı
                 initial_faizli_tutar = st.number_input("Kullanılan Anapara Tutarı", min_value=1.0, value=15000.0, key=f'initial_tutar_{context}')
             with col_f3:
                 st.info("Faiz Bilgileri")
@@ -319,6 +320,7 @@ def render_debt_form(context):
             
             with col_f2:
                 st.info("Kredi Detayları")
+                # Veri Kontrolü: Tutar > 1.0 olmalı
                 initial_faizli_tutar = st.number_input("Kalan Anapara Tutarı", min_value=1.0, value=50000.0, key=f'initial_tutar_{context}')
                 debt_taksit = st.number_input("Aylık Taksit Tutarı", min_value=0.0, value=5000.0, key=f'sabit_taksit_{context}')
             with col_f3:
@@ -335,6 +337,7 @@ def render_debt_form(context):
             
             with col_f2:
                 st.info("Borç Detayları")
+                # Veri Kontrolü: Tutar > 1.0 olmalı
                 initial_faizli_tutar = st.number_input("Kalan Anapara Tutarı", min_value=1.0, value=10000.0, key=f'initial_tutar_{context}')
                 debt_taksit = 0.0
                 debt_kalan_ay = 99999 
@@ -421,8 +424,8 @@ def render_debt_form(context):
 
 
 # --- 5. Görüntüleme ve Yönetim Fonksiyonları ---
+
 def display_and_manage_debts(context_key): 
-    # ... (Aynı kaldı)
     if st.session_state.borclar:
         st.subheader("📊 Mevcut Borçlar ve Giderler")
         
@@ -456,7 +459,6 @@ def display_and_manage_debts(context_key):
         st.info("Henüz eklenmiş bir borç veya gider bulunmamaktadır.")
 
 def display_and_manage_incomes(context_key): 
-    # ... (Aynı kaldı)
     if st.session_state.gelirler:
         st.subheader("💰 Mevcut Gelir Kaynakları")
         gelir_df = pd.DataFrame(st.session_state.gelirler)
@@ -484,7 +486,6 @@ def display_and_manage_incomes(context_key):
 
 # --- 6. Borç Simülasyonu Fonksiyonu ---
 def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, total_birikim_hedefi, birikim_tipi_str, **sim_params):
-    # ... (Simülasyon mantığı aynı kaldı)
     
     if not borclar_initial or not gelirler_initial:
         return None
@@ -520,8 +521,8 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, tot
         borc_tamamlandi = not any(b['tutar'] > 1 for b in mevcut_borclar if b.get('min_kural') not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER'])
         
         # Birikim Hedefi Kontrolü
-        if birikim_tipi_str == "Borç Bitimine Kadar Toplam Tutar":
-            birikim_hedefi_tamamlandi = mevcut_birikim >= total_birikim_hedefi
+        if sim_params.get('birikim_tipi_str') == "Borç Bitimine Kadar Toplam Tutar":
+            birikim_hedefi_tamamlandi = mevcut_birikim >= sim_params.get('total_birikim_hedefi', 0)
         else:
             birikim_hedefi_tamamlandi = True
 
@@ -658,33 +659,27 @@ def run_alternative_scenario(borclar, gelirler, current_params, new_strategy_nam
 
 def generate_report_and_recommendations(sonuc, current_params):
     
-    # 1. Ana Sonuç Özeti
-    rapor = {
-        'Ay Sayısı': sonuc['ay_sayisi'],
-        'Faiz Maliyeti': sonuc['toplam_faiz'],
-        'Kapanış Birikimi': sonuc['toplam_birikim']
-    }
-    
-    # 2. Alternatif Senaryoların Çalıştırılması
+    # 1. Alternatif Senaryoların Çalıştırılması
     alternatifler = []
     
-    # Mevcut stratejinin tam tersini çalıştır (Örn: Avalanche -> Snowball)
-    current_strat = [k for k, v in ONCELIK_STRATEJILERI.items() if v == current_params['oncelik_stratejisi']]
-    is_avalanche = current_strat[0].startswith("Borç Çığı") if current_strat else True
+    current_strat_list = [k for k, v in ONCELIK_STRATEJILERI.items() if v == current_params['oncelik_stratejisi']]
+    current_strat = current_strat_list[0] if current_strat_list else "Kullanıcı Tanımlı Sıra"
+    is_avalanche = current_strat.startswith("Borç Çığı")
     
     # a) Öncelik Tersine Çevirme (Avalanche vs Snowball)
-    if is_avalanche:
+    if current_strat == "Kullanıcı Tanımlı Sıra":
+        alt_strat_name = "Borç Çığı (Avalanche - Önce Faiz)" # Manuelde hep Avalanche/Snowball'dan birini dener
+    elif is_avalanche:
         alt_strat_name = "Borç Kartopu (Snowball - Önce Tutar)"
     else:
         alt_strat_name = "Borç Çığı (Avalanche - Önce Faiz)"
+        
+    current_agresiflik_name = [k for k, v in STRATEJILER.items() if v == current_params['agresiflik_carpan']][0]
 
     try:
-        alternatifler.append(run_alternative_scenario(
-            st.session_state.borclar, st.session_state.gelirler, current_params, alt_strat_name, 
-            [k for k, v in STRATEJILER.items() if v == current_params['agresiflik_carpan']][0]
-        ))
-    except:
-        pass # Senaryo çalışmazsa atla
+        if current_strat != alt_strat_name: # Zaten bu strateji seçiliyse tekrar çalıştırma
+            alternatifler.append(run_alternative_scenario(st.session_state.borclar, st.session_state.gelirler, current_params, alt_strat_name, current_agresiflik_name))
+    except: pass
         
     # b) Agresiflik Değiştirme (Maksimum Çaba vs. Temkinli/Aşırı Çaba)
     current_agresiflik_val = current_params['agresiflik_carpan']
@@ -695,49 +690,39 @@ def generate_report_and_recommendations(sonuc, current_params):
     elif current_agresiflik_val <= STRATEJILER["Temkinli (Yüzde 50)"]:
         alt_agresiflik_name = "Maksimum Çaba (Tüm Ek Ödeme)"
         
-    if alt_agresiflik_name:
+    if alt_agresiflik_name and alt_agresiflik_name != current_agresiflik_name:
         try:
-            alternatifler.append(run_alternative_scenario(
-                st.session_state.borclar, st.session_state.gelirler, current_params, current_strat[0], alt_agresiflik_name
-            ))
-        except:
-             pass
+            alternatifler.append(run_alternative_scenario(st.session_state.borclar, st.session_state.gelirler, current_params, current_strat, alt_agresiflik_name))
+        except: pass
     
-    # 3. Tavsiye Oluşturma
+    # 2. Tavsiye Oluşturma
     tavsiyeler = []
     
     if sonuc['limit_asimi']:
-        tavsiyeler.append("🚨 **ACİL DURUM:** Simülasyon süresi 30 yılı aştı! Mevcut gelir ve gider yapınızla borçlarınızı kapatmanız mümkün görünmüyor. Gelir artışı veya sabit giderlerde ciddi kesintiler yapmayı düşünün.")
+        tavsiyeler.append("🚨 **ACİL DURUM:** Simülasyon süresi 30 yılı aştı! Mevcut gelir ve gider yapınızla borçlarınızı kapatmanız mümkün görünmüyor. **Gelir artışı veya sabit giderlerde ciddi kesintiler** yapmayı düşünün.")
     elif sonuc['ay_sayisi'] <= 12:
         tavsiyeler.append("✅ **TEBRİKLER!** Borçlarınızı bir yıldan kısa sürede kapatıyorsunuz. Finansal olarak çok iyi bir yoldasınız.")
     
-    if alternativer:
-        # Faiz karşılaştırması (Avalanche vs Snowball)
-        faiz_kazanci = [alt for alt in alternatifler if alt['isim'].startswith("Borç Çığı") or alt['isim'].startswith("Borç Kartopu")]
-        if faiz_kazanci:
-            alt_sonuc = faiz_kazanci[0]
-            if alt_sonuc['toplam_faiz'] < sonuc['toplam_faiz']:
-                fark = sonuc['toplam_faiz'] - alt_sonuc['toplam_faiz']
-                tavsiyeler.append(f"💰 **DAHA UCUZ BORÇ KAPATMA FIRSATI:** Eğer '{alt_sonuc['isim'].split('(')[0].strip()}' stratejisini uygularsanız, {alt_sonuc['ay_sayisi']} ayda borçları kapatıp **{format_tl(fark)}** ek faiz tasarrufu sağlayabilirsiniz.")
-            elif alt_sonuc['ay_sayisi'] < sonuc['ay_sayisi'] and alt_sonuc['toplam_faiz'] < sonuc['toplam_faiz'] * 1.05: # Faiz çok artmıyorsa kısa süreyi öner
-                fark_ay = sonuc['ay_sayisi'] - alt_sonuc['ay_sayisi']
-                tavsiyeler.append(f"⏱️ **KISA SÜRE KAZANCI:** '{alt_sonuc['isim'].split('(')[0].strip()}' stratejisi ile borçlarınızı {fark_ay} ay daha erken kapatabilirsiniz. Bu, motivasyonunuzu artırabilir!")
-
-        # Agresiflik karşılaştırması
-        agresiflik_farki = [alt for alt in alternatifler if alt['isim'].endswith("Ek Ödeme)")]
-        if agresiflik_farki:
-            alt_sonuc = agresiflik_farki[0]
-            if alt_sonuc['ay_sayisi'] < sonuc['ay_sayisi']:
-                fark_ay = sonuc['ay_sayisi'] - alt_sonuc['ay_sayisi']
-                fark_faiz = sonuc['toplam_faiz'] - alt_sonuc['toplam_faiz']
-                tavsiyeler.append(f"🚀 **AGRESİFLİK ÖNERİSİ:** '{alt_sonuc['isim'].split('(')[0].strip()}' seçeneğine geçerek borç sürenizi {fark_ay} ay kısaltabilir ve **{format_tl(fark_faiz)}** faiz tasarrufu yapabilirsiniz.")
     
-    # 4. Excel İndirme İçin DataFrame Hazırlığı (Aylık Sonuçların Dışa Aktarımı)
+    # Senaryo Karşılaştırma Tavsiyeleri
+    for alt in alternatifler:
+        faiz_farki = sonuc['toplam_faiz'] - alt['toplam_faiz']
+        süre_farki = sonuc['ay_sayisi'] - alt['ay_sayisi']
+        
+        if faiz_farki > 0 and süre_farki >= 0:
+            tavsiyeler.append(f"💰 **DAHA UCUZ/HIZLI FIRSAT:** '{alt['isim'].split('(')[0].strip()}' stratejisini uygularsanız, borç sürenizi **{süre_farki} ay** kısaltabilir ve **{format_tl(faiz_farki)}** ek faiz tasarrufu sağlayabilirsiniz.")
+        elif süre_farki > 0 and faiz_farki > -(sonuc['toplam_faiz'] * 0.05): # Süre kısalıyor ve faiz %5'ten az artıyorsa öner
+             tavsiyeler.append(f"⏱️ **MOTİVASYON KAZANCI:** '{alt['isim'].split('(')[0].strip()}' stratejisi ile borçlarınızı **{süre_farki} ay** daha erken kapatabilirsiniz. Bu, motivasyonunuzu artırabilir!")
+
+    # 3. Excel İndirme İçin DataFrame Hazırlığı
     excel_data = io.BytesIO()
-    sonuc['df'].to_excel(excel_data, index=False, sheet_name='Aylık Finansal Akış')
+    # Excel tablosuna rapor özeti ve ayarlar eklenebilir. Şimdilik sadece ana DF'i ekleyelim.
+    with pd.ExcelWriter(excel_data, engine='xlsxwriter') as writer:
+        sonuc['df'].to_excel(writer, index=False, sheet_name='Aylık Finansal Akış')
+        
     excel_data.seek(0)
     
-    return {"rapor": rapor, "alternatifler": alternatifler, "tavsiyeler": tavsiyeler, "excel_data": excel_data}
+    return {"alternatifler": alternatifler, "tavsiyeler": tavsiyeler, "excel_data": excel_data}
 
 
 # --- 7. Ana Uygulama Düzeni ---
@@ -933,9 +918,7 @@ if calculate_button_advanced or calculate_button_basic:
             st.markdown("---")
             
             # --- SENARYO KARŞILAŞTIRMA TABLOSU ---
-            ozet_data = [
-                {'Senaryo': 'Mevcut Plan (Seçiminiz)', 'Süre': sonuc['ay_sayisi'], 'Faiz Maliyeti': sonuc['toplam_faiz'], 'Kapanış Birikimi': sonuc['toplam_birikim']}
-            ]
+            ozet_data = [{'Senaryo': 'Mevcut Plan (Seçiminiz)', 'Süre': sonuc['ay_sayisi'], 'Faiz Maliyeti': sonuc['toplam_faiz'], 'Kapanış Birikimi': sonuc['toplam_birikim']}]
             for alt in rapor_sonuclari['alternatifler']:
                  ozet_data.append({'Senaryo': alt['isim'], 'Süre': alt['ay_sayisi'], 'Faiz Maliyeti': alt['toplam_faiz'], 'Kapanış Birikimi': alt['toplam_birikim']})
             
@@ -962,5 +945,4 @@ if calculate_button_advanced or calculate_button_basic:
                 )
             
             with col_res1:
-                 # Basitleştirilmiş genel özet
                 st.dataframe(sonuc['df'], hide_index=True)
