@@ -493,7 +493,7 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **s
     # Sim_params'tan zorunlu parametreleri çek
     total_birikim_hedefi = sim_params.get('total_birikim_hedefi', 0.0)
     birikim_tipi_str = sim_params.get('birikim_tipi_str', 'Aylık Sabit Tutar')
-    baslangic_tarihi = sim_params.get('baslangic_tarihi', date.today()) 
+    baslangic_tarihi = sim_params.get('baslangic_tarihi', date.today()) # Yeni: Başlangıç tarihi
 
     mevcut_borclar = copy.deepcopy(borclar_initial)
     mevcut_gelirler = copy.deepcopy(gelirler_initial)
@@ -541,14 +541,18 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **s
         
         # --- Gelir Hesaplama ---
         toplam_gelir = 0.0
+        aylik_gelir_dagilimi = {} # Bireysel gelirleri takip et
+        
         for gelir in mevcut_gelirler:
             if ay_sayisi >= gelir['baslangic_ay']:
-                if gelir['tek_seferlik']:
-                    if ay_sayisi == gelir['baslangic_ay']:
-                        toplam_gelir += gelir['tutar']
-                else:
-                    artis_carpan = (1 + gelir['artis_yuzdesi']) ** ((ay_sayisi - gelir['baslangic_ay']) / 12)
-                    toplam_gelir += gelir['tutar'] * artis_carpan
+                artis_carpan = (1 + gelir['artis_yuzdesi']) ** ((ay_sayisi - gelir['baslangic_ay']) / 12)
+                gelir_tutari = gelir['tutar'] * artis_carpan
+                
+                if gelir['tek_seferlik'] and ay_sayisi != gelir['baslangic_ay']:
+                    gelir_tutari = 0.0 # Tek seferlik gelir sadece başlangıç ayında
+                    
+                aylik_gelir_dagilimi[gelir['isim']] = round(gelir_tutari)
+                toplam_gelir += gelir_tutari
 
         # --- Giderlerin Kapanması ve Yeniden Atanması ---
         
@@ -581,7 +585,7 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **s
                 
                 toplam_faiz_maliyeti += eklenen_faiz 
                 
-                # Min Ödeme Çıkarma
+                # Min Ödeme Çıkarma (Borçtan düşer)
                 borc['tutar'] -= min_odeme_miktar
                 
                 faizli_borc_durumlari[borc['isim']] = {
@@ -615,7 +619,6 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **s
         # --- Saldırı Gücü Hesaplama ---
         if ay_sayisi == 1:
             ilk_ay_toplam_gelir = toplam_gelir
-            # NOT: Toplam giderler kaldırıldığı için ilk_ay_toplam_gider'i zorunlu ödemelerden hesaplıyoruz
             ilk_ay_toplam_gider = zorunlu_gider_toplam + min_borc_odeme_toplam
 
         kalan_nakit = toplam_gelir - zorunlu_gider_toplam - min_borc_odeme_toplam
@@ -655,16 +658,17 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **s
         
         # --- DETAYLI RAPORLAMA OLUŞTURMA (Her Kalem Ayrı Sütun) ---
         
-        # Streamlit ve Excel raporunda sadece Kalan Tutar, Toplamlar ve Ana Akış sütunları gösterilecek
         aylik_veri = {
             'Ay': ay_adi,
-            'Toplam Gelir': round(toplam_gelir),
-            # TOPLAM GİDER SÜTUNU KALDIRILDI
             'Ek Ödeme Gücü': round(saldırı_gucu),
             'Toplam Birikim': round(mevcut_birikim)
         }
-
-        # Detaylı Borç/Gider Kalemlerini Ekle
+        
+        # 1. Gelirleri Ayrı Ayrı Ekle
+        for isim, tutar in aylik_gelir_dagilimi.items():
+            aylik_veri[f'{isim} (Gelir)'] = tutar
+            
+        # 2. Borç/Gider Kalemlerini Ekle
         for b in borclar_initial: 
             isim = b['isim']
             
@@ -679,13 +683,13 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **s
             
             # Ana sütun: Kalan Tutar (Streamlit'te gösterilecek ana veri)
             if kalan_tutar <= 1 and b['min_kural'] not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']:
-                aylik_veri[f'{isim} (Kalan)'] = "TAMAMLANDI"
+                aylik_veri[f'{isim} (Kalan Borç/Gider)'] = "TAMAMLANDI"
             elif b['min_kural'] in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER'] and kalan_ay <= 0:
-                 aylik_veri[f'{isim} (Kalan)'] = "TAMAMLANDI"
+                 aylik_veri[f'{isim} (Kalan Borç/Gider)'] = "TAMAMLANDI"
             else:
-                 aylik_veri[f'{isim} (Kalan)'] = kalan_tutar
+                 aylik_veri[f'{isim} (Kalan Borç/Gider)'] = kalan_tutar
             
-            # --- EXCEL İÇİN GEREKLİ DETAYLAR --- (Streamlit'te gizli)
+            # --- EXCEL İÇİN GEREKLİ DETAYLAR --- 
             if b['min_kural'] not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER'] and guncel_borc:
                 durum = faizli_borc_durumlari.get(isim, {})
                 aylik_veri[f'{isim} (Ek Ödeme)'] = ek_odeme_dagilimi.get(isim, 0)
@@ -1057,7 +1061,9 @@ if calculate_button_advanced or calculate_button_basic:
             
             # Streamlit'te gösterilecek sadeleştirilmiş sütunlar:
             kalan_sutunlar = [col for col in sonuc['df'].columns if '(Kalan)' in col]
-            gosterilecek_sutunlar = ['Ay', 'Toplam Gelir', 'Ek Ödeme Gücü', 'Toplam Birikim'] + kalan_sutunlar
+            gelir_sutunlar = [col for col in sonuc['df'].columns if '(Gelir)' in col]
+            
+            gosterilecek_sutunlar = ['Ay'] + gelir_sutunlar + kalan_sutunlar + ['Ek Ödeme Gücü', 'Toplam Birikim']
             
             df_gosterim = sonuc['df'][gosterilecek_sutunlar].copy()
             
@@ -1065,7 +1071,7 @@ if calculate_button_advanced or calculate_button_basic:
             for col in df_gosterim.columns:
                  if 'Kalan)' in col:
                      df_gosterim[col] = df_gosterim[col].apply(lambda x: "🟢 TAMAMLANDI" if x == "TAMAMLANDI" else (format_tl(x) if isinstance(x, (int, float)) else x))
-                 elif 'Toplam' in col or 'Ek Ödeme' in col:
+                 elif 'Toplam' in col or 'Ek Ödeme' in col or 'Gelir' in col:
                       df_gosterim[col] = df_gosterim[col].apply(format_tl)
             
             
