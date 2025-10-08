@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
-import numpy as np # NameError'ı çözmek için tekrar eklendi
 import copy
 import json
 import io 
 import os
+from datetime import date
+from dateutil.relativedelta import relativedelta 
 
 # --- 0. Yapılandırma ---
 st.set_page_config(
@@ -41,16 +42,15 @@ def format_tl(tutar):
 
 def create_save_data():
     """st.session_state'i JSON formatında hazırlar."""
-    
-    # KRİTİK DÜZELTME: DataFrame'i JSON uyumlu sözlüğe dönüştür
     harcama_df_dict = st.session_state.harcama_kalemleri_df.to_dict() 
     
     data = {
         'borclar': st.session_state.borclar,
         'gelirler': st.session_state.gelirler,
-        'harcama_kalemleri_df': harcama_df_dict, # Artık sözlük formatında
+        'harcama_kalemleri_df': harcama_df_dict,
         'tr_params': st.session_state.tr_params,
-        'manuel_oncelik_listesi': st.session_state.manuel_oncelik_listesi
+        'manuel_oncelik_listesi': st.session_state.manuel_oncelik_listesi,
+        'baslangic_tarihi': st.session_state.baslangic_tarihi.isoformat()
     }
     return json.dumps(data, ensure_ascii=False, indent=4).encode('utf-8')
 
@@ -72,6 +72,10 @@ def load_data_from_upload(uploaded_file):
                 st.session_state.tr_params.update(data['tr_params'])
             st.session_state.manuel_oncelik_listesi = data.get('manuel_oncelik_listesi', {})
             
+            # Tarih verisini yükle
+            if 'baslangic_tarihi' in data:
+                 st.session_state.baslangic_tarihi = date.fromisoformat(data['baslangic_tarihi'])
+            
             st.success(f"Veriler başarıyla yüklendi: {uploaded_file.name}")
             st.rerun()
             
@@ -85,6 +89,7 @@ if 'gelirler' not in st.session_state: st.session_state.gelirler = []
 if 'harcama_kalemleri_df' not in st.session_state: st.session_state.harcama_kalemleri_df = pd.DataFrame({'Kalem Adı': ['Market', 'Ulaşım', 'Eğlence', 'Kişisel Bakım'], 'Aylık Bütçe (TL)': [15000, 3000, 2000, 1500]})
 if 'tr_params' not in st.session_state: st.session_state.tr_params = {'kk_taksit_max_ay': 12, 'kk_asgari_odeme_yuzdesi_default': 20.0, 'kk_aylik_akdi_faiz': 3.66, 'kk_aylik_gecikme_faiz': 3.96, 'kmh_aylik_faiz': 5.0, 'kredi_taksit_max_ay': 36}
 if 'manuel_oncelik_listesi' not in st.session_state: st.session_state.manuel_oncelik_listesi = {}
+if 'baslangic_tarihi' not in st.session_state: st.session_state.baslangic_tarihi = date.today()
 
 
 # --- 3. Yardımcı Fonksiyonlar ---
@@ -485,8 +490,10 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **s
     if not borclar_initial or not gelirler_initial:
         return None
 
+    # Sim_params'tan zorunlu parametreleri çek
     total_birikim_hedefi = sim_params.get('total_birikim_hedefi', 0.0)
     birikim_tipi_str = sim_params.get('birikim_tipi_str', 'Aylık Sabit Tutar')
+    baslangic_tarihi = sim_params.get('baslangic_tarihi', date.today()) # Yeni: Başlangıç tarihi
 
     mevcut_borclar = copy.deepcopy(borclar_initial)
     mevcut_gelirler = copy.deepcopy(gelirler_initial)
@@ -512,7 +519,10 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **s
     
     while True:
         ay_sayisi += 1
-        ay_adi = f"Ay {ay_sayisi}"
+        
+        # Gerçek Tarihi Hesapla
+        rapor_tarihi = baslangic_tarihi + relativedelta(months=ay_sayisi - 1)
+        ay_adi = rapor_tarihi.strftime("%b %Y") # Örn: Oct 2025
         
         # --- Bitiş Kontrolleri ---
         borc_tamamlandi = not any(b['tutar'] > 1 for b in mevcut_borclar if b.get('min_kural') not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER'])
@@ -559,21 +569,25 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **s
             if borc['min_kural'] in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']:
                 zorunlu_gider_toplam += min_odeme_miktar
                 
-            else: # Faizli Borçlar
+            else: # Faizli Borçlar (KK, KMH, Kredi, Diğer)
                 min_borc_odeme_toplam += min_odeme_miktar
                 
-                # Faiz Uygulama
                 etkilenen_faiz_orani = borc['faiz_aylik'] * faiz_carpani
                 eklenen_faiz = borc['tutar'] * etkilenen_faiz_orani
-                toplam_faiz_maliyeti += eklenen_faiz
-                borc['tutar'] += eklenen_faiz
                 
-                # Min Ödeme Çıkarma
+                # KRİTİK FİNANSAL MANTIK 1: KMH/Kredi'de faiz borcun üzerine eklenir (kapitalize).
+                if borc['min_kural'] in ['FAIZ_ART_ANAPARA', 'FAIZ']:
+                    borc['tutar'] += eklenen_faiz # Faiz borcu şişirir
+                
+                toplam_faiz_maliyeti += eklenen_faiz # Faiz maliyetini her zaman izle
+                
+                # Min Ödeme Çıkarma (KK ve Kredi için zorunlu anapara/asgari)
                 borc['tutar'] -= min_odeme_miktar
                 
                 faizli_borc_durumlari[borc['isim']] = {
                     'faiz': round(eklenen_faiz),
-                    'anapara_min_odeme': round(min_odeme_miktar - eklenen_faiz if borc['min_kural'] == 'SABIT_TAKSIT_ANAPARA' and (min_odeme_miktar - eklenen_faiz) > 0 else min_odeme_miktar * borc.get('zorunlu_anapara_yuzdesi', 0.0))
+                    # Anapara Min Ödeme: Ödenen Min Tutar - Faiz (KK/Kredi için), ya da KMH için zorunlu anapara yüzdesi
+                    'anapara_min_odeme': round(min_odeme_miktar - eklenen_faiz if borc['min_kural'] != 'ASGARI_FAIZ' and (min_odeme_miktar - eklenen_faiz) > 0 else min_odeme_miktar)
                 }
 
 
@@ -649,19 +663,17 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **s
         }
 
         # Detaylı Borç/Gider Kalemlerini Ekle
-        for b in borclar_initial: # Başlangıç listesini kullan ki, kapanan borçların sütun başlığı da olsun
+        for b in borclar_initial: 
             isim = b['isim']
             
-            # Güncel kalan tutarı bul (mevcut_borclar listesinde aynı isimli nesneyi arayarak)
             guncel_borc = next((item for item in mevcut_borclar if item['isim'] == isim), None)
             
             if guncel_borc:
                 kalan_tutar = round(guncel_borc['tutar'])
             else:
-                 # Gider bitti veya borç kapandıysa 0 al, zaten bitiş kaydı yapıldı.
                  kalan_tutar = 0
             
-            # Ana sütun: Kalan Tutar (görselleştirme için TAMAMLANDI ibaresi eklendi)
+            # Ana sütun: Kalan Tutar
             if kalan_tutar <= 1 and b['min_kural'] not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER']:
                 aylik_veri[f'{isim} (Kalan Borç/Gider)'] = "TAMAMLANDI"
             elif b['min_kural'] in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER'] and kalan_tutar <= 1 and b.get('kalan_ay', 1) <= 0:
@@ -669,14 +681,13 @@ def simule_borc_planı(borclar_initial, gelirler_initial, manuel_oncelikler, **s
             else:
                  aylik_veri[f'{isim} (Kalan Borç/Gider)'] = kalan_tutar
             
-            # Faizli Borçlar için Ödeme Detayları
+            # --- EXCEL İÇİN GEREKLİ DETAYLAR ---
             if b['min_kural'] not in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER'] and guncel_borc:
                 durum = faizli_borc_durumlari.get(isim, {})
                 aylik_veri[f'{isim} (Ek Ödeme)'] = ek_odeme_dagilimi.get(isim, 0)
                 aylik_veri[f'{isim} (Faiz)'] = durum.get('faiz', 0)
                 aylik_veri[f'{isim} (Anapara Min)'] = durum.get('anapara_min_odeme', 0)
                 
-            # Sabit Giderler için Taksit Detayı
             elif b['min_kural'] in ['SABIT_GIDER', 'SABIT_TAKSIT_GIDER'] and guncel_borc:
                  aylik_veri[f'{isim} (Taksit/Gider)'] = round(guncel_borc['sabit_taksit']) if guncel_borc['kalan_ay'] > 0 else 0
 
@@ -810,6 +821,15 @@ with col_save:
 st.markdown("---")
 # --- SON KRİTİK ALAN ---
 
+# --- TARİH SEÇİMİ ---
+st.subheader("🗓️ Plan Başlangıç Tarihini Ayarla")
+st.session_state.baslangic_tarihi = st.date_input(
+    "Ödeme planı hangi ay başlasın?",
+    value=st.session_state.baslangic_tarihi,
+    key='date_input_main',
+    help="Bu tarih, 'Ay 1' olarak kabul edilecek ve raporlardaki tarihleri belirleyecektir."
+)
+st.markdown("---")
 
 tab_basic, tab_advanced, tab_rules = st.tabs(["✨ Basit Planlama (Başlangıç)", "🚀 Gelişmiş Planlama", "⚙️ Yönetici Kuralları"])
 
@@ -844,7 +864,7 @@ with tab_basic:
         st.subheader("Adım 3: Raporu İnceleme ve Yorumlama")
         st.markdown("""
         * **Karşılaştırmalı Özet:** Mevcut planınız ile alternatif (Agresiflik/Öncelik değiştirilmiş) planların **toplam faiz maliyeti** ve **kapanma süresi** farkını görerek stratejinizi optimize edin.
-        * **Aylık Detaylar:** "Aylık Ödeme Planı Detayları" tablosunda, her ay için **her borç/gider kaleminizin** kalan tutarını, o ay ödenen faizi ve ek ödeme miktarını görebilirsiniz. Borcu biten kalemler **"🟢 TAMAMLANDI"** olarak işaretlenir. Bu tabloyu Excel'e indirerek daha detaylı analiz yapabilirsiniz.
+        * **Aylık Detaylar:** "Aylık Ödeme Planı Detayları" tablosunda, her ay için **her borç/gider kaleminizin** kalan tutarını görebilirsiniz. Borcu biten kalemler **"🟢 TAMAMLANDI"** olarak işaretlenir. Bu tabloyu Excel'e indirerek (Faiz ve Ek Ödeme detayları dahil) daha derin analiz yapabilirsiniz.
         """)
 
     st.markdown("---")
@@ -857,7 +877,7 @@ with tab_basic:
         BASLANGIC_BIRIKIM_BASIC = st.number_input("Mevcut Başlangıç Birikimi", value=0, step=1000, min_value=0, key='baslangic_birikim_basic')
     with col_st2:
         st.markdown(f"**Borç Kapatma Yöntemi:** **{st.session_state.get('default_oncelik', 'Borç Çığı (Avalanche - Önce Faiz)')}**")
-        st.markdown(f"**Ek Ödeme Agresifliği:** **{st.session_state.get('default_agressiflik', 'Maksimum Çaba (Tüm Ek Ödeme)')}**")
+        st.markdown(f"**Ek Ödeme Agresifliği:** **{st.session_state.get('default_agresiflik', 'Maksimum Çaba (Tüm Ek Ödeme)')}**")
         st.markdown(f"**Birikim Değerlemesi:** TL Mevduat (Yıllık **%{st.session_state.get('default_aylik_artis', 3.5)}** Artış)")
 
     st.markdown("---")
@@ -985,8 +1005,9 @@ if calculate_button_advanced or calculate_button_basic:
         manuel_oncelikler = {}
         sim_params = {'agresiflik_carpan': STRATEJILER[varsayilan_agresiflik_str], 'oncelik_stratejisi': ONCELIK_STRATEJILERI[varsayilan_oncelik_str], 'faiz_carpani': 1.0, 'birikim_artis_aylik': st.session_state.get('default_aylik_artis', 3.5), 'aylik_zorunlu_birikim': AYLIK_ZORUNLU_BIRIKIM_BASIC if BIRIKIM_TIPI_BASIC == "Aylık Sabit Tutar" else 0, 'baslangic_birikim': BASLANGIC_BIRIKIM_BASIC}
     
-    sim_params['total_birikim_hedesi'] = total_birikim_hedefi
+    sim_params['total_birikim_hedefi'] = total_birikim_hedefi
     sim_params['birikim_tipi_str'] = birikim_tipi_str
+    sim_params['baslangic_tarihi'] = st.session_state.baslangic_tarihi
 
 
     # Ana Ödeme Planını Çalıştır
@@ -1030,10 +1051,20 @@ if calculate_button_advanced or calculate_button_basic:
             # --- DETAYLI TABLO VE EXCEL İNDİRME ---
             st.subheader("📋 Aylık Ödeme Planı Detayları (Kalem Bazlı Akış)")
             
-            styled_df = sonuc['df'].copy()
-            for col in styled_df.columns:
-                 if 'Kalan Borç/Gider)' in col or 'Kalan Borç)' in col or 'Kalan Gider)' in col:
-                     styled_df[col] = styled_df[col].apply(lambda x: "🟢 TAMAMLANDI" if x == "TAMAMLANDI" else (format_tl(x) if isinstance(x, (int, float)) else x))
+            # Streamlit'te gösterilecek sadeleştirilmiş sütunlar:
+            # Sadece Ay, Toplamlar ve Kalan Borç/Gider sütunları gösterilecek
+            kalan_sutunlar = [col for col in sonuc['df'].columns if '(Kalan Borç/Gider)' in col]
+            gosterilecek_sutunlar = ['Ay', 'Toplam Gelir', 'Toplam Gider', 'Ek Ödeme Gücü', 'Toplam Birikim'] + kalan_sutunlar
+            
+            df_gosterim = sonuc['df'][gosterilecek_sutunlar].copy()
+            
+            # Görselleştirme: Sayı/Para Formatlama ve TAMAMLANDI ibaresi
+            for col in df_gosterim.columns:
+                 if 'Kalan Borç/Gider' in col:
+                     df_gosterim[col] = df_gosterim[col].apply(lambda x: "🟢 TAMAMLANDI" if x == "TAMAMLANDI" else (format_tl(x) if isinstance(x, (int, float)) else x))
+                 elif 'Toplam' in col or 'Ek Ödeme' in col:
+                      df_gosterim[col] = df_gosterim[col].apply(format_tl)
+            
             
             col_res1, col_res2 = st.columns([3, 1])
             with col_res2:
@@ -1045,7 +1076,7 @@ if calculate_button_advanced or calculate_button_basic:
                 )
             
             with col_res1:
-                st.dataframe(styled_df, hide_index=True)
+                st.dataframe(df_gosterim, hide_index=True)
                 
 # --- DIPNOT VE TELİF ---
 st.markdown("---")
