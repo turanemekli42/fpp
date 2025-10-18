@@ -226,16 +226,17 @@ with tabs[1]:
 with tabs[2]:
     st.header("Veri Giriş Formları")
     with st.expander("Yeni Gelir Ekle", expanded=True):
-        with st.form("gelir_formu", clear_on_submit=True):
+        gelir_tipi_secim = st.selectbox("Eklenecek Gelirin Türünü Seçin", ["Maaş (Düzenli Ve Zamlı)", "Diğer Düzenli Gelir (Kira, Ek İş Vb. - Zamsız)", "Tek Seferlik Gelir (Miras, İkramiye Vb.)"], key="gelir_tur_secimi")
+        with st.form(f"gelir_form_{gelir_tipi_secim}", clear_on_submit=True):
+            st.write(f"**{gelir_tipi_secim} Bilgilerini Girin**")
             gelir_ad = st.text_input("Gelir Kaynağının Adı (Örn: Maaş)")
-            gelir_tutar = st.number_input("Tutar", min_value=0.0, format="%.2f")
-            gelir_tipi = st.selectbox("Gelir Tipi", ["Maaş (Düzenli Ve Zamlı)", "Diğer Düzenli Gelir (Kira, Ek İş Vb. - Zamsız)", "Tek Seferlik Gelir (Miras, İkramiye Vb.)"])
+            gelir_tutar = st.number_input("Tutar", min_value=0.01, format="%.2f")
             zam_sayisi, zam_orani = 0, 0.0
-            if gelir_tipi == "Maaş (Düzenli Ve Zamlı)":
+            if gelir_tipi_secim == "Maaş (Düzenli Ve Zamlı)":
                 zam_sayisi = st.selectbox("Yılda Kaç Kez Zam Bekleniyor?", [0, 1, 2], index=1)
                 zam_orani = st.number_input("Tahmini Yıllık Zam Oranı (%)", min_value=0.0, max_value=200.0, value=40.0, format="%.1f")
             if st.form_submit_button("Geliri Kaydet"):
-                save_record("incomes", {"name": gelir_ad, "amount": gelir_tutar, "type": gelir_tipi, "raises_per_year": zam_sayisi, "raise_percentage": zam_orani}); st.success(f"'{gelir_ad}' Eklendi!")
+                save_record("incomes", {"name": gelir_ad, "amount": gelir_tutar, "type": gelir_tipi_secim, "raises_per_year": zam_sayisi, "raise_percentage": zam_orani}); st.success(f"'{gelir_ad}' Eklendi!")
     with st.expander("Yeni Borç Ekle"):
         borc_tur_secim = st.selectbox("Eklenecek Borcun Türünü Seçin", ["Kredi Kartı", "Tüketici Kredisi", "Konut Kredisi", "KMH / Ek Hesap", "Sabit Taksitli Borç (Okul, Senet Vb.)", "Diğer"], key="borc_tur_secimi")
         with st.form(f"borc_form_{borc_tur_secim}", clear_on_submit=True):
@@ -254,7 +255,7 @@ with tabs[2]:
                 elif borc_tur_secim not in ["KMH / Ek Hesap"]: asgari_odeme = st.number_input("Aylık Asgari Ödeme", min_value=0.01, format="%.2f")
             if st.form_submit_button("Borcu Kaydet"):
                 kaydedilecek_bakiye = asgari_odeme * taksit_sayisi if borc_tur_secim == "Sabit Taksitli Borç (Okul, Senet Vb.)" else borc_bakiye
-                save_record("debts", {"name": borc_ad, "balance": kaydedilecek_bakiye, "interest_rate": borc_faiz, "min_payment": asgari_odeme, "type": borc_tur_secim, "card_limit": kart_limiti, "remaining_installments": taksit_sayisi, "first_payment_date": str(ilk_odeme)}); st.success(f"'{borc_ad}' Eklendi!")
+                save_record("debts", {"name": borc_ad, "balance": kaydedilecek_bakiye, "interest_rate": borc_faiz, "min_payment": asgari_odeme, "type": borc_tur_secim, "card_limit": kart_limiti, "remaining_installments": taksit_sayisi, "first_payment_date": str(ilk_odeme)}); st.success(f"'{borc_ad}' Başarıyla Eklendi!")
     with st.expander("Yeni Sabit Gider Ekle"):
         with st.form("sabit_gider_formu", clear_on_submit=True):
             gider_ad = st.text_input("Giderin Adı"); gider_tutar = st.number_input("Aylık Tutar", min_value=0.01, format="%.2f")
@@ -290,8 +291,7 @@ with tabs[3]:
             if saving_goal['strategy'] == 'Sabit Tutar':
                 aylik_birikim_payi = saving_goal['monthly_amount']
             else:
-                if net_kullanilabilir_fazla > 0:
-                    aylik_birikim_payi = net_kullanilabilir_fazla * (saving_goal['percentage'] / 100)
+                if net_kullanilabilir_fazla > 0: aylik_birikim_payi = net_kullanilabilir_fazla * (saving_goal['percentage'] / 100)
         borclar_icin_ekstra_guc = net_kullanilabilir_fazla - aylik_birikim_payi
         
         st.subheader("Nakit Akışı Analizi")
