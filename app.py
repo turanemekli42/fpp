@@ -80,7 +80,6 @@ def calculate_payoff_plan_detailed(borclar_listesi, ekstra_odeme_gucu, gelirler_
     while any(b['balance'] > 0 for b in sim_borclar) and ay_sayaci < 600:
         ay_sayaci += 1
         current_date = datetime.date.today() + relativedelta(months=ay_sayaci)
-        
         aylik_gelir_artis = 0
         for gelir in sim_gelirler:
             if gelir['type'] == 'Maaş (Düzenli Ve Zamlı)':
@@ -117,7 +116,7 @@ def calculate_payoff_plan_detailed(borclar_listesi, ekstra_odeme_gucu, gelirler_
                     else:
                         odeme = min(borc['balance'], borc['min_payment'])
                     borc['balance'] -= odeme
-                    if borc['type'] == 'Sabit Taksitli Borç (Okul, Senet Vb.)': borc['remaining_installments'] -= 1
+                    if borc['type'] == 'Sabit Taksitli Borç (Okul, Senet Vb.)' and borc['balance'] > 0: borc['remaining_installments'] -= 1
                     if borc['balance'] <= 0: kartopu_etkisi += odenecek_asgari_orjinal
 
         ekstra_odeme_gucu += kartopu_etkisi
@@ -196,8 +195,16 @@ with tabs[1]:
                 st.markdown(f"**{saving['name']}:** `{saving['monthly_amount']:,.2f} TL/ay ({saving['strategy']})`")
                 if st.button(f"Sil##birikim{saving['id']}", key=f"del_birikim_{saving['id']}"): delete_record("savings", saving['id']); st.rerun()
     
-    st.subheader("💳 Borçlar")
+    st.subheader("💳 Toplam Borç Durumu")
     if not st.session_state.debts: st.info("Borç Eklenmemiş.")
+    else:
+        toplam_borc = sum(d['balance'] for d in st.session_state.debts)
+        toplam_kredi_karti_limiti = sum(d['card_limit'] for d in st.session_state.debts if d['type'] == 'Kredi Kartı')
+        c1, c2 = st.columns(2)
+        c1.metric("Toplam Borç Bakiyesi", f"{toplam_borc:,.2f} TL")
+        c2.metric("Hesaplanan Toplam Kredi Kartı Limiti", f"{toplam_kredi_karti_limiti:,.2f} TL")
+
+    st.subheader("Borç Detayları")
     for debt in st.session_state.debts:
         with st.container(border=True):
             col_b1, col_b2 = st.columns([4, 1])
@@ -208,7 +215,7 @@ with tabs[1]:
                     st.markdown(f"**{debt['name']} ({debt['type']}):** `{debt['balance']:,.2f} TL` (Faiz: *%{debt['interest_rate']}*)")
             with col_b2:
                 if st.button(f"Sil##borc{debt['id']}", key=f"del_borc_{debt['id']}"): delete_record("debts", debt['id']); st.rerun()
-
+    
     with st.container(border=True):
         st.subheader("🏠 Sabit Giderler")
         if not st.session_state.fixed_expenses: st.info("Sabit Gider Eklenmemiş.")
@@ -230,21 +237,24 @@ with tabs[2]:
             if st.form_submit_button("Geliri Kaydet"):
                 save_record("incomes", {"name": gelir_ad, "amount": gelir_tutar, "type": gelir_tipi, "raises_per_year": zam_sayisi, "raise_percentage": zam_orani}); st.success(f"'{gelir_ad}' Eklendi!")
     with st.expander("Yeni Borç Ekle"):
-        with st.form("borc_formu", clear_on_submit=True):
-            borc_ad = st.text_input("Borcun Adı"); borc_tur = st.selectbox("Borcun Türü", ["Kredi Kartı", "Tüketici Kredisi", "Konut Kredisi", "KMH / Ek Hesap", "Sabit Taksitli Borç (Okul, Senet Vb.)", "Diğer"])
+        borc_tur_secim = st.selectbox("Eklenecek Borcun Türünü Seçin", ["Kredi Kartı", "Tüketici Kredisi", "Konut Kredisi", "KMH / Ek Hesap", "Sabit Taksitli Borç (Okul, Senet Vb.)", "Diğer"], key="borc_tur_secimi")
+        with st.form(f"borc_form_{borc_tur_secim}", clear_on_submit=True):
+            st.write(f"**{borc_tur_secim} Bilgilerini Girin**")
+            borc_ad = st.text_input("Borcun Adı")
             borc_bakiye, borc_faiz, asgari_odeme, kart_limiti, taksit_sayisi, ilk_odeme = 0.0, 0.0, 0.0, 0.0, 0, None
-            if borc_tur == "Sabit Taksitli Borç (Okul, Senet Vb.)":
+            if borc_tur_secim == "Sabit Taksitli Borç (Okul, Senet Vb.)":
                 asgari_odeme = st.number_input("Aylık Taksit Tutarı", min_value=0.01, format="%.2f")
                 taksit_sayisi = st.number_input("Kalan Taksit Sayısı", min_value=1, step=1)
                 ilk_odeme = st.date_input("İlk Ödeme Tarihi", value=datetime.date.today() + relativedelta(months=1))
-                borc_bakiye = asgari_odeme * taksit_sayisi
+                borc_faiz = 0.0
             else:
                 borc_bakiye = st.number_input("Güncel Bakiye", min_value=0.01, format="%.2f")
                 borc_faiz = st.number_input("Yıllık Faiz Oranı (%)", min_value=0.01, format="%.2f")
-                if borc_tur == "Kredi Kartı": kart_limiti = st.number_input("Kart Limiti", min_value=0.01)
-                elif borc_tur not in ["Kredi Kartı", "KMH / Ek Hesap"]: asgari_odeme = st.number_input("Aylık Asgari Ödeme", min_value=0.01, format="%.2f")
+                if borc_tur_secim == "Kredi Kartı": kart_limiti = st.number_input("Kart Limiti", min_value=0.01, help="Bu karta ait bireysel limiti giriniz.")
+                elif borc_tur_secim not in ["KMH / Ek Hesap"]: asgari_odeme = st.number_input("Aylık Asgari Ödeme", min_value=0.01, format="%.2f")
             if st.form_submit_button("Borcu Kaydet"):
-                save_record("debts", {"name": borc_ad, "balance": borc_bakiye, "interest_rate": borc_faiz, "min_payment": asgari_odeme, "type": borc_tur, "card_limit": kart_limiti, "remaining_installments": taksit_sayisi, "first_payment_date": str(ilk_odeme)}); st.success(f"'{borc_ad}' Eklendi!")
+                kaydedilecek_bakiye = asgari_odeme * taksit_sayisi if borc_tur_secim == "Sabit Taksitli Borç (Okul, Senet Vb.)" else borc_bakiye
+                save_record("debts", {"name": borc_ad, "balance": kaydedilecek_bakiye, "interest_rate": borc_faiz, "min_payment": asgari_odeme, "type": borc_tur_secim, "card_limit": kart_limiti, "remaining_installments": taksit_sayisi, "first_payment_date": str(ilk_odeme)}); st.success(f"'{borc_ad}' Eklendi!")
     with st.expander("Yeni Sabit Gider Ekle"):
         with st.form("sabit_gider_formu", clear_on_submit=True):
             gider_ad = st.text_input("Giderin Adı"); gider_tutar = st.number_input("Aylık Tutar", min_value=0.01, format="%.2f")
@@ -280,7 +290,8 @@ with tabs[3]:
             if saving_goal['strategy'] == 'Sabit Tutar':
                 aylik_birikim_payi = saving_goal['monthly_amount']
             else:
-                aylik_birikim_payi = net_kullanilabilir_fazla * (saving_goal['percentage'] / 100)
+                if net_kullanilabilir_fazla > 0:
+                    aylik_birikim_payi = net_kullanilabilir_fazla * (saving_goal['percentage'] / 100)
         borclar_icin_ekstra_guc = net_kullanilabilir_fazla - aylik_birikim_payi
         
         st.subheader("Nakit Akışı Analizi")
